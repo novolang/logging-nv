@@ -1,0 +1,338 @@
+// lgfile.nv — a file that a long-running program can log into for a
+// year without filling a disk.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// ROTATION IS ARITHMETIC, AND IT IS PUBLISHED AS ARITHMETIC.
+// `should_rotate`, `rotated_name`, `dated_name` and `retired_names` are
+// `[]` — they take the size and the day as numbers and answer with
+// names — and only `open`, `append`, `rotate_now` and `retire` touch
+// `[fs]`.  The split is not tidiness: rotation is where a logging
+// library loses data, the failures are all off-by-one (the file that
+// was renamed onto the one being kept, the `keep = 3` that kept four,
+// the daily rotation that skipped a day at a month boundary), and every
+// one of them is testable in a millisecond if the naming is separable
+// from the renaming.  A test suite that has to create files to check
+// the arithmetic will not have enough cases in it.
+//
+// THE CLOCK IS AN ARGUMENT.  `[time]` is inside the `host` budget and
+// this package could have taken it; it does not, because a rotation
+// that read the clock itself could not be tested across a month
+// boundary without moving the machine's clock, and because a program
+// that stamps its records has already read the clock and would read it
+// twice.  `append` takes the day the caller is in.
+//
+// A FAILED WRITE IS REPORTED.  `std.log`'s file sink swallows one, which
+// is the right default for a global logger a script uses and the wrong
+// one for a service whose auditors read the file: a disk that filled at
+// 03:00 should not look like a quiet night.  So every row here answers
+// a `Result` and the program decides.
+
+use lgrecord
+
+// When to start a new file.
+//
+// Three, and the third is not a combination of the first two: a program
+// that rotates daily AND at a size cap needs both bounds, and expressing
+// that as two policies would leave the interaction undefined.
+pub enum LgRotate
+    // One file, growing.  Correct when something else — logrotate, a
+    // container runtime, a journal — owns the rotation.
+    LgRotateNever
+    // A new file once the current one passes `bytes`, keeping `keep`
+    // old ones.  `keep = 0` keeps none, which is a real configuration
+    // and not a mistake.
+    LgRotateSize(bytes: Int, keep: Int)
+    // A new file when the day changes, keeping `keep` days.
+    LgRotateDaily(keep: Int)
+    // Both bounds: a new file when the day changes OR when the current
+    // one passes `bytes`.  Named rather than implied, so the
+    // interaction is a variant a reader can find.
+    LgRotateDailyOrSize(bytes: Int, keep: Int)
+
+// Everything about a file sink that is not the path.
+//
+// One struct rather than six arguments, because a program builds it
+// once at startup from its configuration and a six-argument `open` is
+// where the order gets transposed.
+pub struct LgFilePolicy
+    rotate: LgRotate
+    format: LgFormat
+    theme: LgTheme
+    // The sink's own floor, which `accepts` answers with.
+    min: LgLevel
+    // Push the file after this many records; `0` pushes after every
+    // one.  The trade is stated rather than chosen: pushing every
+    // record costs a system call per line and loses nothing in a
+    // crash; pushing every thousand costs almost nothing and loses up
+    // to a thousand lines.
+    flush_every: Int
+    // Create the file's directory if it is not there.  `false` refuses
+    // rather than creating, because a path typo that silently creates
+    // `/var/log/myapp` beside `/var/log/my-app` is a log nobody finds.
+    create_dirs: Bool
+
+// A file the sink appends to, and the policy it follows.
+//
+// `size` and `day` are the sink's own record of what it has written, so
+// `should_rotate` can be answered without asking the filesystem on
+// every line.  `day` is a day number — days since the Unix epoch — not
+// a date, because rotation only ever compares two of them for equality
+// and a day number needs no calendar.
+pub struct LgFileSink
+    path: Str
+    policy: LgFilePolicy
+    // Bytes written to the current file.
+    size: Int
+    // The day the current file was opened on.
+    day: Int
+    // The handle the open file is behind.  `0` before `open`.
+    handle: Int
+
+// Writing a file costs `[fs]`, which is what the impl head declares.
+//
+// NOT `[io, fs]`: the standard library's own `File` declares
+// `impl Write[io, fs]`, and a sink that wrote through it would inherit
+// both.  This one declares `[fs]` because that is the honest claim for
+// "append to a named file", and the implementation lane's job is to
+// make it true — if it cannot, the row widens here and the README's
+// § What widened says so rather than the claim quietly growing.
+impl LgSink[fs] for LgFileSink
+    // Render the record and append the line.
+    //
+    // Does NOT rotate: rotation needs the day, which this signature
+    // does not have.  `lgfile.append` is the call that rotates, and
+    // this one is what the trait requires.
+    fn emit(self, r: LgRecord) -> Result<Unit, LgSinkFault> [fs]
+        todo("logging-nv.lgfile.LgFileSink.emit")
+
+    // Push the file.
+    fn flush(self) -> Result<Unit, LgSinkFault> [fs]
+        todo("logging-nv.lgfile.LgFileSink.flush")
+
+    // Whether a record at this level clears the sink's floor.
+    fn accepts(self, l: LgLevel) -> Bool [fs]
+        todo("logging-nv.lgfile.LgFileSink.accepts")
+
+// A policy: this format, never rotating, no floor, pushing every
+// record, refusing to create directories.
+//
+// The conservative one, so that every difference from it is something a
+// program said out loud.
+//
+// ```novo
+// use lgfile
+// use lgformat
+//
+// fn main() [io]
+//     let p = lgfile.policy(lgformat.json())
+//     println("${p.flush_every}")
+// ```
+pub fn policy(f: LgFormat) -> LgFilePolicy []
+    todo("logging-nv.lgfile.policy")
+
+// The same policy with a rotation rule.
+//
+// ```novo
+// use lgfile
+// use lgformat
+//
+// fn main() [io]
+//     let p = lgfile.rotating(lgfile.policy(lgformat.json()),
+//                             LgRotateSize(10485760, 5))
+//     println("${p.flush_every}")
+// ```
+pub fn rotating(p: LgFilePolicy, r: LgRotate) -> LgFilePolicy []
+    todo("logging-nv.lgfile.rotating")
+
+// The same policy pushing every `n` records.
+//
+// ```novo
+// use lgfile
+// use lgformat
+//
+// fn main() [io]
+//     let p = lgfile.flushing(lgfile.policy(lgformat.json()), 1000)
+//     println("${p.flush_every}")
+// ```
+pub fn flushing(p: LgFilePolicy, n: Int) -> LgFilePolicy []
+    todo("logging-nv.lgfile.flushing")
+
+// Open the file and answer a sink over it.
+//
+// Appends to what is there; it does not truncate, because a process
+// restart that erased its own log is the failure this signature exists
+// to make impossible.  The current size is read on the way in, so
+// `should_rotate` is answerable before the first record.
+//
+// ```novo
+// use lgfile
+// use lgformat
+//
+// fn start() -> Result<LgFileSink, LgSinkFault> [fs]
+//     lgfile.open("/var/log/app.jsonl", lgfile.policy(lgformat.json()), 20342)
+//
+// fn main() [io]
+//     println("a file sink, appended to")
+// ```
+pub fn open(path: Str, p: LgFilePolicy, today: Int) -> Result<LgFileSink, LgSinkFault> [fs]
+    todo("logging-nv.lgfile.open")
+
+// Append one record, rotating first if the policy says to.
+//
+// `today` is the day number the caller is in — the same number
+// `should_rotate` compares — so that a daily rotation is driven by the
+// program's clock and not by this package's.
+//
+// Answers the sink to keep: a rotation changed its `handle`, its `size`
+// and its `day`, and a caller that kept the old value would append to a
+// file that has been renamed.
+//
+// ```novo
+// use lgfile
+// use lgrecord
+//
+// fn note(s: LgFileSink) -> Result<LgFileSink, LgSinkFault> [fs]
+//     lgfile.append(s, lgrecord.record(LgInfo, "app", "started"), 20342)
+//
+// fn main() [io]
+//     println("one line, rotating when the policy says")
+// ```
+pub fn append(s: LgFileSink, r: LgRecord, today: Int) -> Result<LgFileSink, LgSinkFault> [fs]
+    todo("logging-nv.lgfile.append")
+
+// Append a batch, rotating between records when the policy says to.
+//
+// One render into one buffer and one write per file, which is the
+// saving a queue drainer takes.  A rotation in the middle of the batch
+// splits the write.
+//
+// ```novo
+// use lgfile
+//
+// fn notes(s: LgFileSink, rs: [LgRecord]) -> Result<LgFileSink, LgSinkFault> [fs]
+//     lgfile.append_all(s, rs, 20342)
+//
+// fn main() [io]
+//     println("a batch, split at a rotation")
+// ```
+pub fn append_all(s: LgFileSink, rs: [LgRecord], today: Int) -> Result<LgFileSink, LgSinkFault> [fs]
+    todo("logging-nv.lgfile.append_all")
+
+// Rotate now, whatever the policy says.
+//
+// What a `SIGHUP` handler calls, and what a test calls to get a
+// deterministic boundary.
+//
+// ```novo
+// use lgfile
+//
+// fn hup(s: LgFileSink) -> Result<LgFileSink, LgSinkFault> [fs]
+//     lgfile.rotate_now(s, 20342)
+//
+// fn main() [io]
+//     println("a new file on request")
+// ```
+pub fn rotate_now(s: LgFileSink, today: Int) -> Result<LgFileSink, LgSinkFault> [fs]
+    todo("logging-nv.lgfile.rotate_now")
+
+// Delete the files this policy no longer keeps, answering what was
+// deleted.
+//
+// Separate from `rotate_now` because deleting is the irreversible half
+// and a program may want to do it on a schedule, under a different
+// permission, or not at all.  Answering the names rather than a count,
+// so a program can log what it deleted — which is the one log line
+// anybody looks for after a file goes missing.
+//
+// ```novo
+// use lgfile
+//
+// fn tidy(s: LgFileSink) -> Result<[Str], LgSinkFault> [fs]
+//     lgfile.retire(s)
+//
+// fn main() [io]
+//     println("the old files, named")
+// ```
+pub fn retire(s: LgFileSink) -> Result<[Str], LgSinkFault> [fs]
+    todo("logging-nv.lgfile.retire")
+
+// Should a file of this size, opened on this day, be rotated today?
+//
+// `[]`, and this is the function the test suite spends its cases on.
+//
+// ```novo
+// use lgfile
+//
+// fn main() [io]
+//     let r = lgfile.should_rotate(LgRotateSize(1024, 3), 2048, 20341, 20342)
+//     println("${r}")
+// ```
+pub fn should_rotate(r: LgRotate, size: Int, opened_day: Int, today: Int) -> Bool []
+    todo("logging-nv.lgfile.should_rotate")
+
+// The name the `n`th-oldest rotated file has.
+//
+// `n = 1` is the most recent rotation.  The suffix goes after the whole
+// path — `app.jsonl.1`, not `app.1.jsonl` — because that is what every
+// tool that globs a log directory expects and because an extension that
+// moved would stop a viewer from recognising the format.
+//
+// ```novo
+// use lgfile
+//
+// fn main() [io]
+//     println(lgfile.rotated_name("/var/log/app.jsonl", 1))
+// ```
+pub fn rotated_name(path: Str, n: Int) -> Str []
+    todo("logging-nv.lgfile.rotated_name")
+
+// The name a daily rotation gives the file for this day number.
+//
+// `app.jsonl.2026-09-11`.  A day number rather than a date, converted
+// here, so the whole package needs no calendar in its surface and the
+// conversion is one testable function.
+//
+// ```novo
+// use lgfile
+//
+// fn main() [io]
+//     println(lgfile.dated_name("/var/log/app.jsonl", 20342))
+// ```
+pub fn dated_name(path: Str, day: Int) -> Str []
+    todo("logging-nv.lgfile.dated_name")
+
+// Every name this policy would delete, given the names that exist.
+//
+// The list the caller HAS is an argument, so the decision is pure and
+// `retire` is the thin `[fs]` wrapper that reads the directory and
+// unlinks.  This is where the off-by-one in `keep` is caught.
+//
+// ```novo
+// use lgfile
+//
+// fn main() [io]
+//     let gone = lgfile.retired_names(
+//         LgRotateSize(1024, 1),
+//         ["/var/log/app.jsonl.1", "/var/log/app.jsonl.2"])
+//     println("${list.len(gone)}")
+// ```
+pub fn retired_names(r: LgRotate, existing: [Str]) -> [Str] []
+    todo("logging-nv.lgfile.retired_names")
+
+// The day number a Unix epoch second falls in.
+//
+// Published because it is the conversion between the stamp a record
+// carries and the day this module rotates on, and a caller that got it
+// wrong would rotate at the wrong hour with no other symptom.  UTC,
+// stated rather than assumed: a local-time rotation needs a zone
+// database, which this package does not have and will not grow.
+//
+// ```novo
+// use lgfile
+//
+// fn main() [io]
+//     println("${lgfile.day_of(1757548800.0)}")
+// ```
+pub fn day_of(ts_unix: Float) -> Int []
+    todo("logging-nv.lgfile.day_of")

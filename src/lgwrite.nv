@@ -1,0 +1,220 @@
+// lgwrite.nv — the sinks that write, and the one question this package
+// asks the machine.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A LIBRARY TAKES THE WRITER.  `write_record` is generic over the
+// standard library's own `Write[e]`, so a caller hands it a file, a
+// socket, a pipe or a `Buffer` and pays exactly what that costs — `[]`
+// for the buffer, which is what makes a test of a library's log output
+// an ordinary pure assertion.  That is `docs/publishing.md` § Design's
+// "a library does not print" written as a signature rather than as a
+// convention somebody has to remember.
+//
+// `LgStdSink` IS THE EXCEPTION, AND ITS `[io]` ROW IS THE DISCLOSURE.  A
+// program — not a library — does eventually have to name stderr, and a
+// package that refused to would push every program into writing the
+// same eight lines.  So there is one sink that names it, it is `[io]`,
+// and a reader of a dependency list sees that before they take it.
+//
+// `is_terminal` IS THE ONLY QUESTION ASKED OF THE MACHINE.  Colour is a
+// decision that cannot be made correctly by a formatter — the formatter
+// does not hold the descriptor — and cannot be made correctly by a
+// default either, because the same program is run interactively and
+// under a pipe on the same day.  So it is asked once, by the party that
+// owns the descriptor, and the answer is a `Bool` that goes into a
+// `LgHumanStyle`.  Everything else in this package stays pure.
+
+use lgrecord
+
+// Which of the two standard streams.
+//
+// Stderr is the default and stdout is the option, which is the opposite
+// of what a first reading suggests: a log line on stdout corrupts the
+// output of any program whose stdout is data, and the number of tools
+// that have been broken by a library logging to stdout is the reason
+// every logging library defaults the other way.
+pub enum LgStream
+    LgStderr
+    LgStdout
+
+// A sink over one of the standard streams.
+//
+// Holds its own format, so a program configures the decision once at
+// startup and the emit path consults one value.
+pub struct LgStdSink
+    stream: LgStream
+    format: LgFormat
+    // The theme the human format uses.  Carried even for logfmt and
+    // JSON, so that changing the format at run time does not lose it.
+    theme: LgTheme
+    // A floor the sink applies on top of whatever filter the caller
+    // uses: what `accepts` answers with.
+    min: LgLevel
+
+// Writing to a standard stream costs `[io]`, which is what the impl
+// head declares and the effect checker holds every method to.
+impl LgSink[io] for LgStdSink
+    // Render the record through this sink's format and write the line.
+    //
+    // A short write is retried; a failed write is reported rather than
+    // swallowed, because the decision to ignore it belongs to the
+    // program and is visible at the call site when it is made there.
+    fn emit(self, r: LgRecord) -> Result<Unit, LgSinkFault> [io]
+        todo("logging-nv.lgwrite.LgStdSink.emit")
+
+    // Push the stream.  Stderr is unbuffered, so this is a no-op for
+    // it and real for stdout.
+    fn flush(self) -> Result<Unit, LgSinkFault> [io]
+        todo("logging-nv.lgwrite.LgStdSink.flush")
+
+    // Whether a record at this level clears the sink's own floor.
+    fn accepts(self, l: LgLevel) -> Bool [io]
+        todo("logging-nv.lgwrite.LgStdSink.accepts")
+
+// A stderr sink with this format, the default theme and no floor.
+//
+// ```novo
+// use lgformat
+// use lgwrite
+//
+// fn main() [io]
+//     let s = lgwrite.stderr_sink(lgformat.human())
+//     println(lgformat.format_name(s.format))
+// ```
+pub fn stderr_sink(f: LgFormat) -> LgStdSink []
+    todo("logging-nv.lgwrite.stderr_sink")
+
+// A stdout sink with this format.
+//
+// For the program whose stdout IS the log — a container entry point, a
+// `journald` unit — and for nothing else.
+//
+// ```novo
+// use lgformat
+// use lgwrite
+//
+// fn main() [io]
+//     let s = lgwrite.stdout_sink(lgformat.json())
+//     println(lgformat.format_name(s.format))
+// ```
+pub fn stdout_sink(f: LgFormat) -> LgStdSink []
+    todo("logging-nv.lgwrite.stdout_sink")
+
+// The same sink with a level floor.
+//
+// ```novo
+// use lgformat
+// use lgwrite
+//
+// fn main() [io]
+//     let s = lgwrite.with_min(lgwrite.stderr_sink(lgformat.human()), LgWarn)
+//     println("${s.accepts(LgInfo)}")
+// ```
+pub fn with_min(s: LgStdSink, min: LgLevel) -> LgStdSink []
+    todo("logging-nv.lgwrite.with_min")
+
+// The same sink with a theme the caller built.
+//
+// ```novo
+// use lgformat
+// use lgwrite
+//
+// fn main() [io]
+//     let s = lgwrite.with_theme(lgwrite.stderr_sink(lgformat.human()),
+//                                lgformat.default_theme())
+//     println("${s.min == LgTrace}")
+// ```
+pub fn with_theme(s: LgStdSink, t: LgTheme) -> LgStdSink []
+    todo("logging-nv.lgwrite.with_theme")
+
+// The same sink with a different format.
+//
+// ```novo
+// use lgformat
+// use lgwrite
+//
+// fn main() [io]
+//     let s = lgwrite.with_format(lgwrite.stderr_sink(lgformat.human()),
+//                                 lgformat.json())
+//     println(lgformat.format_name(s.format))
+// ```
+pub fn with_format(s: LgStdSink, f: LgFormat) -> LgStdSink []
+    todo("logging-nv.lgwrite.with_format")
+
+// Is this stream a terminal?
+//
+// `[io]`, and it is the one row in this package that asks the machine
+// anything that is not a write.  The answer is what a program puts in
+// `LgHumanStyle.colour`, and asking it here — once, at startup, by the
+// program — is what keeps every render pure.
+//
+// ```novo
+// use lgwrite
+//
+// fn main() [io]
+//     let tty = lgwrite.is_terminal(LgStderr)
+//     println("${tty}")
+// ```
+pub fn is_terminal(s: LgStream) -> Bool [io]
+    todo("logging-nv.lgwrite.is_terminal")
+
+// The colour depth this stream can take, read off the environment.
+//
+// `SgrNoColor` when the stream is not a terminal, when `NO_COLOR` is
+// set, or when `TERM` says `dumb`; otherwise the best of what `TERM`
+// and `COLORTERM` claim.  `[io]` because the environment is `[io]`
+// (SPEC § 5.1), and one call rather than three so a program cannot
+// implement half of the `NO_COLOR` convention.
+//
+// ```novo
+// use lgwrite
+//
+// fn main() [io]
+//     let d = lgwrite.colour_depth(LgStderr)
+//     println("${d == SgrNoColor}")
+// ```
+pub fn colour_depth(s: LgStream) -> SgrDepth [io]
+    todo("logging-nv.lgwrite.colour_depth")
+
+// Render one record and write it, with a newline, to a writer the
+// caller supplies.
+//
+// THE ROW IS `[e]`.  A `Buffer` costs nothing, a `File` costs
+// `[io, fs]`, a `TcpStream` costs `[io, net]`, and this function is
+// written once for all three — which is the shape the layer design
+// asks for and the reason a library can log without deciding where.
+//
+// ```novo
+// use lgformat
+// use lgrecord
+// use lgwrite
+//
+// fn note<W: Write[e]>(w: W) -> ?IoError [e]
+//     lgwrite.write_record(w, lgformat.logfmt(), lgformat.default_theme(),
+//                          lgrecord.record(LgInfo, "app", "started"))
+//
+// fn main() [io]
+//     println("a log line charged what the writer costs")
+// ```
+pub fn write_record<W: Write[e]>(w: W, f: LgFormat, t: LgTheme, r: LgRecord) -> ?IoError [e]
+    todo("logging-nv.lgwrite.write_record")
+
+// The same for a batch, rendered into one buffer and written once.
+//
+// The reason it exists beside the singular form: a hundred records
+// through `write_record` is a hundred system calls, and a hundred
+// records through this is one.  A sink draining a queue takes this one.
+//
+// ```novo
+// use lgformat
+// use lgwrite
+//
+// fn notes<W: Write[e]>(w: W, rs: [LgRecord]) -> ?IoError [e]
+//     lgwrite.write_records(w, lgformat.logfmt(), lgformat.default_theme(), rs)
+//
+// fn main() [io]
+//     println("one write for the whole batch")
+// ```
+pub fn write_records<W: Write[e]>(w: W, f: LgFormat, t: LgTheme, rs: [LgRecord]) -> ?IoError [e]
+    todo("logging-nv.lgwrite.write_records")

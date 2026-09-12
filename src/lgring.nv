@@ -1,0 +1,259 @@
+// lgring.nv — the last N records, kept in memory, for the party that
+// only wants them once something has gone wrong.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE RING IS PUBLISHED TWICE, AND THAT IS THE INTERESTING PART.  A
+// sink is by definition a place records are PUT, and a value cannot be
+// put into — `push` answers a new ring and the caller keeps it.  So
+// there are two surfaces over one idea:
+//
+//   - `LgRing` with `push`, `drain` and `snapshot`, all `[]`.  A caller
+//     that threads it pays nothing at all, which is what lets a `core`
+//     consumer, a test and an embedded build hold one.
+//   - `LgRingSink` with `impl LgSink[mutate]`, which is the same ring
+//     behind a slot so it can sit behind the trait beside a file and a
+//     terminal.
+//
+// A package that shipped only the first could not put a ring in a list
+// of sinks; one that shipped only the second would charge `[mutate]` to
+// a caller that has nothing to mutate.  Neither is a subset of the
+// other, so both are published and the README says which to reach for.
+//
+// WHAT IT IS FOR.  Two things, and they are the same shape.  A service
+// keeps the last thousand debug records and writes them out only when a
+// request fails, so the cost of debug logging is paid on the failures
+// rather than on every request.  A device keeps its interned frames in
+// a buffer and dumps them when a host attaches, which is the deferred
+// logging story's own shape — and `lgdeflog` is how the dumped frames
+// come back as records.
+//
+// OVERRUN IS REPORTED, NOT SILENT.  A full ring drops the oldest and
+// counts it.  `dropped` is on the value and on the fault, because a
+// reader of a dump who is not told that 9,000 records were discarded
+// will read the remaining thousand as the whole story.
+
+use lgrecord
+use lgsink
+
+// A bounded buffer of the most recent records.
+//
+// `cap` is a count of records rather than bytes, because the records
+// are not rendered yet and their rendered size depends on a format
+// chosen later — which is the whole reason a sink takes a record.
+pub struct LgRing
+    cap: Int
+    // The records held, oldest first.
+    items: [LgRecord]
+    // How many were discarded to make room, since the ring was built or
+    // last cleared.
+    dropped: Int
+
+// A ring behind a slot, so it can be a sink.
+//
+// `slot` names a cell the caller owns; the sink writes through it,
+// which is what `[mutate]` in the impl head is for.  It is an `Int`
+// rather than a reference because that is how the standard library's
+// own buffer sinks are addressed (`std.log`'s `SinkBuf(handle)`), and
+// because a struct holding a mutable ring would make every copy of the
+// sink a copy of the buffer.
+pub struct LgRingSink
+    slot: Int
+    // The floor `accepts` answers with.
+    min: LgLevel
+
+// Writing into a slot the caller owns costs `[mutate]` and nothing
+// else: no descriptor is touched, no clock is read, nothing leaves the
+// process.
+impl LgSink[mutate] for LgRingSink
+    // Put the record in the ring, dropping the oldest if it is full.
+    //
+    // Answers `Ok` even when a record was dropped — a ring that failed
+    // on a full buffer would be a queue — and the count comes back
+    // through `ring_in`, on the ring's own `dropped` field.
+    fn emit(self, r: LgRecord) -> Result<Unit, LgSinkFault> [mutate]
+        todo("logging-nv.lgring.LgRingSink.emit")
+
+    // A no-op: a ring holds everything on purpose.
+    fn flush(self) -> Result<Unit, LgSinkFault> [mutate]
+        todo("logging-nv.lgring.LgRingSink.flush")
+
+    // Whether a record at this level clears the sink's floor.
+    fn accepts(self, l: LgLevel) -> Bool [mutate]
+        todo("logging-nv.lgring.LgRingSink.accepts")
+
+// An empty ring holding at most `cap` records.
+//
+// ```novo
+// use lgring
+//
+// fn main() [io]
+//     let rg = lgring.ring(1024)
+//     println("${rg.cap}")
+// ```
+pub fn ring(cap: Int) -> LgRing []
+    todo("logging-nv.lgring.ring")
+
+// The ring with this record added, dropping the oldest if it is full.
+//
+// ```novo
+// use lgrecord
+// use lgring
+//
+// fn main() [io]
+//     let rg = lgring.push(lgring.ring(2),
+//                          lgrecord.record(LgInfo, "app", "started"))
+//     println("${lgring.len(rg)}")
+// ```
+pub fn push(rg: LgRing, r: LgRecord) -> LgRing []
+    todo("logging-nv.lgring.push")
+
+// Everything the ring holds, oldest first, and the emptied ring.
+//
+// The pair rather than two calls, because a drain that left the caller
+// to empty it separately is a drain that loses whatever arrived in
+// between — and in a program that logs from more than one place, that
+// is every drain.
+//
+// ```novo
+// use lgring
+//
+// fn main() [io]
+//     let (rs, empty) = lgring.drain(lgring.ring(8))
+//     println("${list.len(rs)} ${lgring.len(empty)}")
+// ```
+pub fn drain(rg: LgRing) -> ([LgRecord], LgRing) []
+    todo("logging-nv.lgring.drain")
+
+// Everything the ring holds, without emptying it.
+//
+// For the caller that wants to look — a `/debug/log` endpoint, a
+// crash handler that also lets the program continue.
+//
+// ```novo
+// use lgring
+//
+// fn main() [io]
+//     println("${list.len(lgring.snapshot(lgring.ring(8)))}")
+// ```
+pub fn snapshot(rg: LgRing) -> [LgRecord] []
+    todo("logging-nv.lgring.snapshot")
+
+// How many records the ring holds.
+//
+// ```novo
+// use lgring
+//
+// fn main() [io]
+//     println("${lgring.len(lgring.ring(8))}")
+// ```
+pub fn len(rg: LgRing) -> Int []
+    todo("logging-nv.lgring.len")
+
+// How many records this ring has discarded.
+//
+// ```novo
+// use lgring
+//
+// fn main() [io]
+//     println("${lgring.dropped_count(lgring.ring(8))}")
+// ```
+pub fn dropped_count(rg: LgRing) -> Int []
+    todo("logging-nv.lgring.dropped_count")
+
+// Is the ring at capacity?
+//
+// ```novo
+// use lgring
+//
+// fn main() [io]
+//     println("${lgring.is_full(lgring.ring(0))}")
+// ```
+pub fn is_full(rg: LgRing) -> Bool []
+    todo("logging-nv.lgring.is_full")
+
+// An empty ring of the same capacity, with the drop count reset.
+//
+// ```novo
+// use lgring
+//
+// fn main() [io]
+//     println("${lgring.len(lgring.clear(lgring.ring(8)))}")
+// ```
+pub fn clear(rg: LgRing) -> LgRing []
+    todo("logging-nv.lgring.clear")
+
+// A sink over a slot the caller owns.
+//
+// ```novo
+// use lgring
+//
+// fn main() [io]
+//     let s = lgring.ring_sink(0)
+//     println("${s.slot}")
+// ```
+pub fn ring_sink(slot: Int) -> LgRingSink []
+    todo("logging-nv.lgring.ring_sink")
+
+// The ring behind this sink's slot.
+//
+// `[mutate]` because reading through the slot is reaching into state
+// the sink shares, and a row that claimed otherwise would be a lie the
+// checker cannot catch.
+//
+// ```novo
+// use lgring
+//
+// fn look(s: LgRingSink) -> Int [mutate]
+//     lgring.len(lgring.ring_in(s))
+//
+// fn main() [io]
+//     println("the ring behind the slot")
+// ```
+pub fn ring_in(s: LgRingSink) -> LgRing [mutate]
+    todo("logging-nv.lgring.ring_in")
+
+// Empty the sink's ring and answer what was in it.
+//
+// The dump: what a crash handler calls before it writes the records
+// somewhere durable.
+//
+// ```novo
+// use lgring
+//
+// fn dump(s: LgRingSink) -> [LgRecord] [mutate]
+//     lgring.drain_in(s)
+//
+// fn main() [io]
+//     println("the last N records, taken")
+// ```
+pub fn drain_in(s: LgRingSink) -> [LgRecord] [mutate]
+    todo("logging-nv.lgring.drain_in")
+
+// Write everything in a ring into another sink, answering how many were
+// written.
+//
+// THE ROW IS `[e]`, so the destination decides the cost: a ring dumped
+// into a file costs `[fs]`, into a terminal `[io]`, and into another
+// ring `[mutate]`.  This is the call at the end of the crash path, and
+// the reason `LgSink[e]` is a trait rather than an enum — an enum
+// destination would charge the crash path the union of every sink the
+// program links.
+//
+// The ring is not emptied: the caller that also wants that calls
+// `drain` first and passes the list.  Two calls, because a dump that
+// failed halfway and had already emptied the ring would have lost
+// exactly the records it was reporting.
+//
+// ```novo
+// use lgring
+// use lgsink
+//
+// fn spill<S: lgsink.LgSink[e]>(rg: LgRing, to: S) -> Result<Int, LgSinkFault> [e]
+//     lgring.dump_into(rg, to)
+//
+// fn main() [io]
+//     println("the ring, spilled into whatever the caller has")
+// ```
+pub fn dump_into<S: LgSink[e]>(rg: LgRing, to: S) -> Result<Int, LgSinkFault> [e]
+    todo("logging-nv.lgring.dump_into")

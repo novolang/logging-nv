@@ -1,0 +1,256 @@
+// lgdeflog.nv — a device's interned frames and a host's records, read
+// by one reader.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE PROBLEM THIS CLOSES.  A product is a firmware and a host tool, and
+// they log in two different vocabularies: the firmware sends an interned
+// format-string index and raw argument bytes over RTT, and the host
+// builds `LgRecord`s.  Anybody debugging the pair has two log files with
+// two shapes, two filters and two timestamps, and has to correlate them
+// by eye.  The conversion is thirty lines and every product writes it
+// again, differently, with the level mapping wrong in a different place.
+//
+// THE BRIDGE IS A CONVERSION, NOT A TRANSPORT.  Nothing here reads a
+// serial port or an ELF file — `deflog-decoder` does that, and it is
+// `core`, so it can.  Every row in this module is `[]` except the one
+// that puts records into a caller's sink, which is `[e]`.  So a host
+// tool that already has decoded records pays nothing to bring them into
+// this package's world.
+//
+// WHAT DOES NOT SURVIVE, and it is published as data rather than
+// described.  A device record carries things an `LgRecord` has no place
+// for — the interned index, the wide and structured argument values, the
+// raw tick count — and an `LgRecord` has things a device never sends.
+// `lossy_fields` names them per record, so a tool can say what it
+// dropped instead of a reader assuming nothing was.
+//
+// THE CLOCK IS THE HARD PART, AND IT IS THE CALLER'S.  A device stamp is
+// a counter whose unit is the firmware's business — cycles, milliseconds
+// since boot, an RTC.  Turning it into a Unix second needs the tick rate
+// AND the instant the counter was zero, and only the host knows either.
+// `stamp_seconds` takes both; a package that guessed would put every
+// device log line in 1970.
+
+use lgrecord
+use lgsink
+
+// How a device counter is turned into a wall-clock second.
+//
+// Two numbers and no clock.  `epoch_at_zero` is the Unix second the
+// device's counter read zero, which a host learns by asking the device
+// for its counter at a moment the host has timed — so the conversion is
+// exact to the accuracy of that one exchange, and it is the host's job
+// to decide how good that is.
+pub struct LgTickBase
+    // Counter units per second.  `0.0` means the unit is unknown, and
+    // `stamp_seconds` answers `0.0` for every record rather than
+    // inventing one.
+    ticks_per_second: Float
+    // The Unix second at which the counter read zero.
+    epoch_at_zero: Float
+
+// The five device levels as the six this package has.
+//
+// `LogTrace` becomes `LgTrace`, which is exactly why `LgLevel` has six:
+// with five, a device's trace lines would arrive as debug and the one
+// filter a person reaches for when a device is too chatty would not
+// work.
+//
+// ```novo
+// use lgdeflog
+// use lgrecord
+//
+// fn main() [io]
+//     println(lgrecord.level_name(lgdeflog.level_of(LogWarn)))
+// ```
+pub fn level_of(l: DeflogLevel) -> LgLevel []
+    todo("logging-nv.lgdeflog.level_of")
+
+// A device record as a host record.
+//
+// The mapping, stated here because it is what a reader of a mixed log
+// needs to trust:
+//
+// - `level` — the device's, through `level_of`.  A record with no level
+//   arrives at `LgDebug`, because `decstream` only yields log lines and
+//   a caller decoding a nested value on its own has one that is not one.
+// - `message` — the decoder's rendered `text`, which is the format
+//   string with its arguments in the holes.
+// - `target` — `target_of`, below.
+// - `file` and `line` — the device's site, when the firmware was built
+//   with locations.
+// - `fields` — the arguments, as `arg0`, `arg1`, … so a filter can
+//   reach them.  Named positionally because a `defmt` format string has
+//   no argument names in it.
+// - `ts_unix` — `0.0`.  The base is not in this signature, deliberately:
+//   a caller that has one uses `record_of_at`, and a caller that does
+//   not gets a record with no timestamp rather than a wrong one.
+//
+// ```novo
+// use lgdeflog
+//
+// fn bring(d: DeflogRecord) -> LgRecord
+//     lgdeflog.record_of(d)
+//
+// fn main() [io]
+//     println("a device line, as a host record")
+// ```
+pub fn record_of(d: DeflogRecord) -> LgRecord []
+    todo("logging-nv.lgdeflog.record_of")
+
+// The same, with the device's counter converted through a base.
+//
+// ```novo
+// use lgdeflog
+//
+// fn bring(d: DeflogRecord, b: LgTickBase) -> LgRecord
+//     lgdeflog.record_of_at(d, b)
+//
+// fn main() [io]
+//     println("a device line, stamped in wall-clock seconds")
+// ```
+pub fn record_of_at(d: DeflogRecord, base: LgTickBase) -> LgRecord []
+    todo("logging-nv.lgdeflog.record_of_at")
+
+// A batch, converted in order.
+//
+// ```novo
+// use lgdeflog
+//
+// fn bring(ds: [DeflogRecord], b: LgTickBase) -> [LgRecord]
+//     lgdeflog.records_of(ds, b)
+//
+// fn main() [io]
+//     println("a batch of device lines")
+// ```
+pub fn records_of(ds: [DeflogRecord], base: LgTickBase) -> [LgRecord] []
+    todo("logging-nv.lgdeflog.records_of")
+
+// One decoded argument as a field value.
+//
+// The four arms that fit go across unchanged; the three that do not —
+// a 128-bit integer, a byte string, a list, a nested user type — are
+// rendered to `LgvStr` in the decoder's own spelling, and `lossy_fields`
+// reports that they were.  A field type that grew arms to carry them
+// would make every consumer of an ordinary host log handle cases only a
+// device can produce.
+//
+// ```novo
+// use lgdeflog
+// use lgformat
+//
+// fn main() [io]
+//     println(lgformat.value_text(lgdeflog.value_of(ValUnsigned(512))))
+// ```
+pub fn value_of(v: DeflogValue) -> LgValue []
+    todo("logging-nv.lgdeflog.value_of")
+
+// The target a device record gets.
+//
+// The module path from the record's site when the firmware carries
+// locations, and `"device"` when it does not — never the empty string,
+// because a target is what a filter rule matches on and an empty one
+// can only be governed by the root rule.  A caller that wants the
+// device's name in front of it rebuilds the record with
+// `lgrecord.record`; that decision belongs to the tool that knows how
+// many devices it is talking to.
+//
+// ```novo
+// use lgdeflog
+//
+// fn name(d: DeflogRecord) -> Str
+//     lgdeflog.target_of(d)
+//
+// fn main() [io]
+//     println("the target a device line is filtered under")
+// ```
+pub fn target_of(d: DeflogRecord) -> Str []
+    todo("logging-nv.lgdeflog.target_of")
+
+// A device counter as a Unix second, or `0.0` when the base cannot say.
+//
+// ```novo
+// use lgdeflog
+//
+// fn when(s: DeflogStamp, b: LgTickBase) -> Float
+//     lgdeflog.stamp_seconds(s, b)
+//
+// fn main() [io]
+//     println("a device counter, in wall-clock seconds")
+// ```
+pub fn stamp_seconds(s: DeflogStamp, base: LgTickBase) -> Float []
+    todo("logging-nv.lgdeflog.stamp_seconds")
+
+// A base built from one observation: the host's clock and the device's
+// counter, read at the same moment.
+//
+// `[]`, because both numbers are the caller's — which is what makes the
+// whole conversion testable without a device.
+//
+// ```novo
+// use lgdeflog
+//
+// fn main() [io]
+//     let b = lgdeflog.tick_base(64000000.0, 1757548800.0, 1280000)
+//     println("${b.ticks_per_second}")
+// ```
+pub fn tick_base(ticks_per_second: Float, host_now: Float, device_ticks: Int) -> LgTickBase []
+    todo("logging-nv.lgdeflog.tick_base")
+
+// A base that answers no timestamp at all.
+//
+// What a tool uses before it has managed the exchange, so that records
+// still flow and simply carry no time.
+//
+// ```novo
+// use lgdeflog
+//
+// fn main() [io]
+//     println("${lgdeflog.no_tick_base().ticks_per_second}")
+// ```
+pub fn no_tick_base() -> LgTickBase []
+    todo("logging-nv.lgdeflog.no_tick_base")
+
+// What this device record carries that the host record will not.
+//
+// One string per dropped fact, naming what it was: `"index"`,
+// `"arg3:wide"`, `"arg5:format"`, `"ticks"`.  Empty when nothing was
+// lost, which is the common case for a firmware logging integers.
+//
+// ```novo
+// use lgdeflog
+//
+// fn lost(d: DeflogRecord) -> [Str]
+//     lgdeflog.lossy_fields(d)
+//
+// fn main() [io]
+//     println("what a conversion dropped, named")
+// ```
+pub fn lossy_fields(d: DeflogRecord) -> [Str] []
+    todo("logging-nv.lgdeflog.lossy_fields")
+
+// Convert a batch of device records and put them in a sink, answering
+// how many were written.
+//
+// THE ROW IS `[e]`, so the destination decides the cost — and this is
+// the call that makes "one reader" true rather than claimed: a host
+// tool's own records and a device's frames go into the same
+// `LgSink[e]`, through the same filter, rendered by the same format, in
+// one file.
+//
+// ```novo
+// use lgdeflog
+// use lgfilter
+// use lgsink
+//
+// fn ship<S: lgsink.LgSink[e]>(ds: [DeflogRecord], to: S, f: LgFilter,
+//                              b: LgTickBase) -> Result<Int, LgSinkFault> [e]
+//     lgdeflog.bridge_into(ds, to, f, b)
+//
+// fn main() [io]
+//     println("a device's frames, in the host's log")
+// ```
+pub fn bridge_into<S: LgSink[e]>(ds: [DeflogRecord], to: S, f: LgFilter,
+                                 base: LgTickBase) -> Result<Int, LgSinkFault> [e]
+    todo("logging-nv.lgdeflog.bridge_into")

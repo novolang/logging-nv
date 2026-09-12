@@ -1,0 +1,143 @@
+// lglog_tests.nv — the logger facade, and the seam with `std.log`.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-nv.lglog.<fn>`.
+//
+// `build` IS THE SEAM THIS SUITE LEANS ON.  It answers the record a
+// logger WOULD emit, at `[]`, so every property of the facade — the
+// sticky fields, the resolved level, the target a child takes — is
+// assertable with no sink in the room.  A facade whose only surface
+// performed would need a fake sink to test any of it.
+
+use std.test
+use std.list
+use lgfilter
+use lgrecord
+use lglog
+use lgsink
+
+@test
+fn test_a_root_logger_starts_where_a_program_would_want_it() [io]
+    let lg = lglog.logger("app")
+
+    test.case("the target is what was named")
+    test.assert(lg.target == "app")
+
+    test.case("the default threshold is info, which is what a program in production wants")
+    test.assert(lg.resolved == LgInfo)
+
+    test.case("and there are no sticky fields until one is added")
+    test.assert(list.len(lg.sticky) == 0)
+
+@test
+fn test_a_child_takes_the_parents_configuration_and_its_own_level() [io]
+    let root = lglog.filtered(lglog.logger("ml"),
+                              lgfilter.rule(lgfilter.filter(LgInfo), "ml.core", LgDebug))
+    let child = lglog.named(root, "ml.core")
+
+    test.case("the child's target is its own")
+    test.assert(child.target == "ml.core")
+
+    test.case("its level is resolved once, here, from the parent's filter")
+    test.assert(child.resolved == LgDebug)
+
+    test.case("and the parent is unchanged, because a logger is a value")
+    test.assert(root.resolved == LgInfo)
+
+@test
+fn test_sticky_fields_are_on_every_line_and_come_first() [io]
+    let lg = lglog.with_sticky(lglog.logger("app"), lgrecord.field_str("run", "r-9"))
+    let r = lglog.build(lg, LgInfo, "started", [lgrecord.field_int("status", 200)])
+
+    test.case("both the sticky field and the call's own are there")
+    test.assert(list.len(r.fields) == 2)
+
+    test.case("and the sticky one is the one a lookup finds first")
+    match lgrecord.field_of(r, "run")
+        Some(v) => test.assert(lgrecord.value_kind(v) == "str")
+        None    => test.assert(false)
+
+@test
+fn test_the_record_a_logger_builds_carries_its_target() [io]
+    let r = lglog.build(lglog.logger("http.server"), LgWarn, "slow", [])
+
+    test.case("the target, so the filter and the output agree about the name")
+    test.assert(r.target == "http.server")
+
+    test.case("the level and the message as given")
+    test.assert(r.level == LgWarn)
+    test.assert(r.message == "slow")
+
+    test.case("and no timestamp, because building never reads the clock")
+    test.assert(lgrecord.has_timestamp(r) == false)
+
+@test
+fn test_a_stamped_build_carries_the_time_the_caller_read() [io]
+    let r = lglog.build_at(lglog.logger("app"), 1757548800.0, LgInfo, "started", [])
+
+    test.case("the stamp is the caller's")
+    test.assert(r.ts_unix == 1757548800.0)
+    test.assert(lgrecord.has_timestamp(r))
+
+@test
+fn test_enabled_answers_from_the_level_resolved_at_naming() [io]
+    let lg = lglog.named(
+        lglog.filtered(lglog.logger("ml"),
+                       lgfilter.rule(lgfilter.filter(LgWarn), "ml.core", LgDebug)),
+        "ml.core")
+
+    test.case("the child's own rule governs")
+    test.assert(lglog.enabled(lg, LgDebug))
+
+    test.case("and below it nothing passes")
+    test.assert(lglog.enabled(lg, LgTrace) == false)
+
+@test
+fn test_an_emit_answers_whether_it_wrote() [io]
+    let lg = lglog.logger("app")
+
+    test.case("a record the filter admits is written")
+    match lglog.emit(lg, lgsink.null_sink(), LgInfo, "started", [])
+        Ok(written) => test.assert(written)
+        Err(_)      => test.assert(false)
+
+    test.case("a record below the threshold is Ok(false) rather than an error")
+    match lglog.emit(lg, lgsink.null_sink(), LgDebug, "quiet", [])
+        Ok(written) => test.assert(written == false)
+        Err(_)      => test.assert(false)
+
+@test
+fn test_the_std_log_seam_names_what_it_loses() [io]
+    test.case("the four levels std.log has map to its own numbers")
+    test.assert(lglog.std_log_level(LgDebug) == 0)
+    test.assert(lglog.std_log_level(LgInfo) == 1)
+    test.assert(lglog.std_log_level(LgWarn) == 2)
+    test.assert(lglog.std_log_level(LgError) == 3)
+
+    test.case("trace collapses into debug, which is what the seam costs")
+    test.assert(lglog.std_log_level(LgTrace) == 0)
+
+    test.case("and off has nowhere to go, so it lands at the loudest")
+    test.assert(lglog.std_log_level(LgOff) == 3)
+
+// The four calls that perform something, named here with the rows they
+// declare.  `now` is the only clock reading in the package and
+// `to_std_log` is the migration seam; neither belongs in an assertion
+// about a record.
+fn stamp() -> Float [time]
+    lglog.now()
+
+fn out(r: LgRecord) [io]
+    lglog.to_std_log(r)
+
+fn both(lg: LgLogger, con: LgStdSink, f: LgFileSink) -> LgFanout [io, fs]
+    lglog.emit_to_console_and_file(lg, con, f, LgInfo, "started", [], 20342)
+
+@test
+fn test_a_stamped_emit_carries_the_time_the_caller_read() [io]
+    let lg = lglog.logger("app")
+
+    test.case("the record written is the stamped one")
+    match lglog.emit_at(lg, lgsink.null_sink(), 1757548800.0, LgInfo, "started", [])
+        Ok(written) => test.assert(written)
+        Err(_)      => test.assert(false)

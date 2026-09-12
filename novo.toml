@@ -1,0 +1,81 @@
+[package]
+name        = "logging-nv"
+license     = "Apache-2.0"
+version     = "0.0.1"
+description = "Structured logging as a record and a sink: a level, a target, a message and typed fields, filtered by longest-prefix module rules, rendered by a human/logfmt/JSON formatter family, and delivered through `LgSink[e]` — the trait with an effect parameter that lets one generic emit cost `[io]` over a terminal, `[fs]` over a rotating file and nothing at all over a ring buffer.  The deferred-logging decoder's records enter through the same sink.  Interface only — every body is a todo()."
+
+# `license` sits immediately after the name, before any value that could
+# contain a square bracket.  The publish reads it with a pattern that
+# stops at the first `[`, so a description naming an effect row or an
+# effect-parameterised trait hides it and the release records no licence
+# at all — silently.
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `host`, and the rows are not all the same — which is the disclosure
+# worth having.  Six of the nine modules declare NOTHING: the record,
+# the filter, the formatter family, the ring buffer's arithmetic, the
+# deferred-logging conversion and the logger facade's record builder are
+# all `[]`, because rendering a line is arithmetic over a value the
+# caller already holds.  What performs is three modules and one trait:
+# `lgwrite` is `[io]`, `lgfile` is `[fs]`, `lgring`'s sink impl is
+# `[mutate]`, and everything generic over `LgSink[e]` costs exactly what
+# the caller's own sink costs.
+#
+# THE LAYER IS ALSO THIS PACKAGE'S ONE UNRESOLVED QUESTION.  A `core`
+# package may not depend on a `host` one, so a `core` package cannot
+# reach `LgSink[e]` at all — and "a core package logs through the trait
+# at `[]`" is the design this package was asked for.  The README's
+# § The missing row names the split that would close it
+# (`logging-core-nv`) and says what would move.
+layer       = "host"
+
+category    = "tooling"
+
+tags        = ["logging", "log", "structured-logging", "sink", "logfmt", "json-lines", "defmt"]
+repository  = "https://github.com/novolang/logging-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "A record, a filter, a format and a sink"
+
+[dependencies]
+# Colour, for the human formatter and nothing else.  ansi-nv is `core`,
+# so it costs a consumer no effects; `SgrAttrs` and `SgrDepth` are in
+# this package's public surface because a theme a caller cannot change
+# is a theme that is wrong for somebody's terminal.
+#
+# The reason it is a dependency rather than an escape string: a level
+# tag written as `"\u{1b}[31m"` cannot be downgraded to the sixteen
+# colours a real TTY has, and `sgr.downgrade` is exactly that arithmetic.
+ansi-nv = "^0.0.1"
+
+# The deferred-logging bridge.  `lgdeflog` converts a `DeflogRecord` —
+# one line a device sent as an interned index and raw bytes, decoded on
+# the host — into an `LgRecord`, so a firmware's log and its host tool's
+# log go to ONE sink and one reader.  The type has to cross for that
+# claim to be checkable, which is why this is a dependency and not a
+# paragraph.
+#
+# Both halves are named because both types are used: `DeflogRecord`,
+# `DeflogValue` and `DeflogStamp` are the decoder's, `DeflogLevel` is
+# the parser's.  A transitive dependency is not a `use`.
+#
+# WHAT IT COSTS, said here rather than only in the README: every
+# consumer of logging-nv assembles elf-nv, leb128-nv, zigzag-nv and
+# rzcobs-nv too, because that is deflog-decoder's own closure.  Four
+# packages is a real price for a program that only wants a log line on
+# stderr, and the alternative — a `deflog-sink-nv` adapter row that
+# depends on both and is depended on by neither — is the milestone
+# review's to weigh.
+deflog-decoder = "^0.0.1"
+deflog-parser  = "^0.0.1"

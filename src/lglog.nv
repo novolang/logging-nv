@@ -1,0 +1,315 @@
+// lglog.nv — the facade a program actually calls, and the seam with
+// `std.log`.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHAT `std.log` KEEPS, which is the question this package has to
+// answer before it earns its place:
+//
+//   - THE GLOBAL FUNCTIONS STAY.  `log.info("…")` is four characters of
+//     ceremony and reaches a working stderr with no value threaded
+//     anywhere.  A script, an example in a tutorial, a `main` that is
+//     forty lines — none of them want a `Logger`, a filter and a sink,
+//     and a package that told them to would be wrong about its own
+//     users.  This package does not wrap them and does not replace them.
+//   - `std.log`'s `Logger` KEEPS the whole no-dependency case.  It is in
+//     the standard library, so it costs a program nothing to resolve, it
+//     already has per-module levels with longest-prefix matching, text
+//     and JSON, five sinks and a pure `render_at`.  A program whose
+//     needs it meets should use it and should not take this dependency.
+//   - `render_at` KEEPS being the reference for the text format.  This
+//     package's human format pads the level tag to the same column nine
+//     deliberately, so a program migrating one subsystem at a time
+//     produces output that still lines up.
+//
+// WHAT THIS PACKAGE ADDS, and why each of the four is not something the
+// standard library could take:
+//
+//   - `LgSink[e]` — the effect parameter.  `std.log`'s own page states
+//     the cost it cannot avoid: because `LogSink` is data, `Logger.info`
+//     is charged `[io]` "even when the installed sink is `SinkNull`".  A
+//     trait with an effect parameter removes that, and a trait in the
+//     standard library would be a trait every program links.
+//   - TYPED FIELDS.  `std.log`'s field values are `Str`, and its own
+//     page names the consequence: render your numbers at the call site,
+//     consistently, or the index on the consuming side breaks.  This
+//     package makes the renderer decide instead.
+//   - ROTATION.  A file sink that grows without bound is a standard
+//     library making a policy decision; a rotation policy is a package's
+//     job.
+//   - THE DEVICE BRIDGE.  Nothing in the standard library knows what a
+//     `DeflogRecord` is, and it should not.
+//
+// THE LOGGER IS A VALUE AND THE SINK IS AN ARGUMENT.  `LgLogger` holds
+// no sink: it is a name, a filter, a format and the sticky fields, and
+// every emit takes the sink.  A logger that held its sink would have to
+// be generic over it, which puts a type parameter on a struct field —
+// and it would make a logger untestable without building the sink it
+// holds.  Threading two values instead of one is the price, and it is
+// paid at one call site per subsystem.
+
+use lgrecord
+use lgsink
+
+// A name, a filter, a format and the fields every line carries.
+//
+// `target` is what the filter matches on and what the output calls this
+// logger.  `resolved` is the threshold the filter gave that target when
+// the logger was built, cached so the hot path compares two integers
+// rather than walking the rules — the same saving `std.log`'s
+// `Logger.named` makes.
+pub struct LgLogger
+    target: Str
+    filter: LgFilter
+    format: LgFormat
+    theme: LgTheme
+    // Emitted on every line this logger builds, before the call's own.
+    sticky: [LgField]
+    // The filter's answer for `target`, resolved once.
+    resolved: LgLevel
+
+// A root logger: this target, an `LgInfo` default filter, the human
+// format, no sticky fields.
+//
+// ```novo
+// use lglog
+//
+// fn main() [io]
+//     let lg = lglog.logger("app")
+//     println(lg.target)
+// ```
+pub fn logger(target: Str) -> LgLogger []
+    todo("logging-nv.lglog.logger")
+
+// A child logger under a longer target, with the parent's filter,
+// format, theme and sticky fields, and its own resolved level.
+//
+// The one call a subsystem makes at startup.  Resolving here is what
+// makes the per-line cost an integer comparison.
+//
+// ```novo
+// use lglog
+//
+// fn main() [io]
+//     let lg = lglog.named(lglog.logger("ml"), "ml.core")
+//     println(lg.target)
+// ```
+pub fn named(lg: LgLogger, target: Str) -> LgLogger []
+    todo("logging-nv.lglog.named")
+
+// The same logger with a different filter, and its level re-resolved.
+//
+// ```novo
+// use lgfilter
+// use lglog
+//
+// fn main() [io]
+//     let lg = lglog.filtered(lglog.logger("app"), lgfilter.filter(LgDebug))
+//     println(lg.target)
+// ```
+pub fn filtered(lg: LgLogger, f: LgFilter) -> LgLogger []
+    todo("logging-nv.lglog.filtered")
+
+// The same logger with a different format.
+//
+// ```novo
+// use lgformat
+// use lglog
+//
+// fn main() [io]
+//     let lg = lglog.formatted(lglog.logger("app"), lgformat.json())
+//     println(lgformat.format_name(lg.format))
+// ```
+pub fn formatted(lg: LgLogger, f: LgFormat) -> LgLogger []
+    todo("logging-nv.lglog.formatted")
+
+// The same logger with one more field on every line it builds.
+//
+// A request id, a run id, a tenant — the fields whose absence from one
+// line in a thousand is what makes a log unsearchable.
+//
+// ```novo
+// use lgrecord
+// use lglog
+//
+// fn main() [io]
+//     let lg = lglog.with_sticky(lglog.logger("app"),
+//                                lgrecord.field_str("run", "r-9"))
+//     println("${list.len(lg.sticky)}")
+// ```
+pub fn with_sticky(lg: LgLogger, f: LgField) -> LgLogger []
+    todo("logging-nv.lglog.with_sticky")
+
+// Would this logger's filter admit a record at this level?
+//
+// The check a caller makes before building an expensive message, and
+// the one that costs nothing because the level was resolved at `named`.
+//
+// ```novo
+// use lglog
+//
+// fn main() [io]
+//     println("${lglog.enabled(lglog.logger("app"), LgDebug)}")
+// ```
+pub fn enabled(lg: LgLogger, l: LgLevel) -> Bool []
+    todo("logging-nv.lglog.enabled")
+
+// The record this logger would build, without emitting it.
+//
+// `[]`, and it is the seam that makes everything above testable: a test
+// asserts on the record — its target, its sticky fields, its level —
+// with no sink in the room at all.
+//
+// ```novo
+// use lgrecord
+// use lglog
+//
+// fn main() [io]
+//     let r = lglog.build(lglog.logger("app"), LgInfo, "started", [])
+//     println(r.target)
+// ```
+pub fn build(lg: LgLogger, l: LgLevel, msg: Str, fs: [LgField]) -> LgRecord []
+    todo("logging-nv.lglog.build")
+
+// The same, stamped with a time the caller read.
+//
+// ```novo
+// use lglog
+//
+// fn main() [io]
+//     let r = lglog.build_at(lglog.logger("app"), 1757548800.0, LgInfo, "started", [])
+//     println("${r.ts_unix}")
+// ```
+pub fn build_at(lg: LgLogger, ts_unix: Float, l: LgLevel, msg: Str, fs: [LgField]) -> LgRecord []
+    todo("logging-nv.lglog.build_at")
+
+// Build the record and emit it, answering whether it was written.
+//
+// THE ROW IS `[e]`: one call, charged what the caller's sink costs.
+// This is the function a program's own `fn info(msg)` wrapper is two
+// lines over.
+//
+// ```novo
+// use lglog
+// use lgsink
+//
+// fn note<S: lgsink.LgSink[e]>(lg: LgLogger, to: S) -> Result<Bool, LgSinkFault> [e]
+//     lglog.emit(lg, to, LgInfo, "started", [])
+//
+// fn main() [io]
+//     println("one log call, charged what the sink costs")
+// ```
+pub fn emit<S: LgSink[e]>(lg: LgLogger, to: S, l: LgLevel, msg: Str,
+                          fs: [LgField]) -> Result<Bool, LgSinkFault> [e]
+    todo("logging-nv.lglog.emit")
+
+// The same, stamped.
+//
+// Two functions rather than one with an optional time, because the
+// difference is the caller's `[time]` row: `emit` is charged what the
+// sink costs and `emit_at` is too, with `[time]` appearing at the call
+// site that read the clock.  That is the whole arrangement `std.log`
+// arrived at with `info` and `info_at`, and it is right.
+//
+// ```novo
+// use lglog
+// use lgsink
+//
+// fn note<S: lgsink.LgSink[e]>(lg: LgLogger, to: S,
+//                              now: Float) -> Result<Bool, LgSinkFault> [e]
+//     lglog.emit_at(lg, to, now, LgInfo, "started", [])
+//
+// fn main() [io]
+//     println("one stamped log call")
+// ```
+pub fn emit_at<S: LgSink[e]>(lg: LgLogger, to: S, ts_unix: Float, l: LgLevel, msg: Str,
+                             fs: [LgField]) -> Result<Bool, LgSinkFault> [e]
+    todo("logging-nv.lglog.emit_at")
+
+// Emit one record to a console sink and a file sink, answering what each
+// did.
+//
+// THE CONCRETE FAN-OUT, and its existence is a language fact rather than
+// a design preference: a function binds exactly one effect parameter, so
+// a fan-out generic over two sinks cannot be written.  Both types are
+// named here, the row is the `[io, fs]` this pair genuinely costs, and
+// the pair is the one every service wants — a person watching a terminal
+// and a file the collector tails.
+//
+// Neither sink's failure stops the other: a full disk is not a reason to
+// stop showing lines to the person watching.
+//
+// ```novo
+// use lgfile
+// use lglog
+// use lgwrite
+//
+// fn both(lg: LgLogger, con: LgStdSink, f: LgFileSink) -> LgFanout [io, fs]
+//     lglog.emit_to_console_and_file(lg, con, f, LgInfo, "started", [], 20342)
+//
+// fn main() [io]
+//     println("one record, a terminal and a file")
+// ```
+pub fn emit_to_console_and_file(lg: LgLogger, con: LgStdSink, file: LgFileSink, l: LgLevel,
+                                msg: Str, fs: [LgField], today: Int) -> LgFanout [io, fs]
+    todo("logging-nv.lglog.emit_to_console_and_file")
+
+// The clock, read once.
+//
+// `[time]`, and it is the ONLY row in this package that reads it.  It is
+// here rather than inside the emit path so that the label appears at the
+// call site that earned it, and so that a program which stamps a batch
+// from one reading pays for one reading.
+//
+// A convenience over `time.now()` and nothing more; a program that
+// already has a clock reading should pass that.
+//
+// ```novo
+// use lglog
+//
+// fn stamp() -> Float [time]
+//     lglog.now()
+//
+// fn main() [io]
+//     println("one clock reading, where it is earned")
+// ```
+pub fn now() -> Float [time]
+    todo("logging-nv.lglog.now")
+
+// This level as the integer `std.log`'s global functions take.
+//
+// `0` debug, `1` info, `2` warn, `3` error.  `LgTrace` maps to `0` and
+// `LgOff` to `3`, which loses information in both directions — that is
+// what the seam costs, and naming it is better than a program
+// discovering it.
+//
+// ```novo
+// use lglog
+//
+// fn main() [io]
+//     println("${lglog.std_log_level(LgWarn)}")
+// ```
+pub fn std_log_level(l: LgLevel) -> Int []
+    todo("logging-nv.lglog.std_log_level")
+
+// Emit this record through `std.log`'s global functions.
+//
+// `[io]`, and it is the migration path in one call: a program that
+// already calls `log.info` everywhere can start building records,
+// filtering them properly and sending them here, and change the sink
+// later without touching a call site.  The fields go through
+// `log.fields`, so the output is `std.log`'s and interleaves with
+// whatever else the program still logs directly.
+//
+// ```novo
+// use lgrecord
+// use lglog
+//
+// fn out(r: LgRecord) [io]
+//     lglog.to_std_log(r)
+//
+// fn main() [io]
+//     println("a record, through the standard library's own logger")
+// ```
+pub fn to_std_log(r: LgRecord) [io]
+    todo("logging-nv.lglog.to_std_log")

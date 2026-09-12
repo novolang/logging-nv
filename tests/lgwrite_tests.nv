@@ -1,0 +1,118 @@
+// lgwrite_tests.nv — the writer form, the standard-stream sink, and the
+// one question this package asks the machine.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-nv.lgwrite.<fn>`.
+//
+// THE DEFAULT THAT MATTERS is stderr.  A log line on stdout corrupts the
+// output of any program whose stdout is data, and the number of tools
+// broken that way is why every logging library defaults the other way.
+// It is asserted rather than described.
+
+use std.test
+use lgformat
+use lgrecord
+use lgwrite
+
+@test
+fn test_the_default_stream_is_stderr() [io]
+    test.case("a stderr sink names stderr")
+    test.assert(lgwrite.stderr_sink(lgformat.human()).stream == LgStderr)
+
+    test.case("and stdout is the one a program has to ask for by name")
+    test.assert(lgwrite.stdout_sink(lgformat.json()).stream == LgStdout)
+
+@test
+fn test_a_sink_carries_its_whole_decision() [io]
+    let s = lgwrite.stderr_sink(lgformat.json())
+
+    test.case("the format it was built with")
+    test.assert(lgformat.format_name(s.format) == "json")
+
+    test.case("and no floor, so the caller's filter is the only gate until one is set")
+    test.assert(s.min == LgTrace)
+
+@test
+fn test_the_builders_change_one_thing_each() [io]
+    let base = lgwrite.stderr_sink(lgformat.human())
+
+    test.case("a floor changes the floor and nothing else")
+    let floored = lgwrite.with_min(base, LgWarn)
+    test.assert(floored.min == LgWarn)
+    test.assert(floored.stream == base.stream)
+
+    test.case("a format changes the format and keeps the floor")
+    let jsoned = lgwrite.with_format(floored, lgformat.json())
+    test.assert(lgformat.format_name(jsoned.format) == "json")
+    test.assert(jsoned.min == LgWarn)
+
+    test.case("and a theme keeps both")
+    let themed = lgwrite.with_theme(jsoned, lgformat.default_theme())
+    test.assert(themed.min == LgWarn)
+    test.assert(lgformat.format_name(themed.format) == "json")
+
+@test
+fn test_a_floor_is_what_accepts_answers_with() [io]
+    let s = lgwrite.with_min(lgwrite.stderr_sink(lgformat.human()), LgWarn)
+
+    test.case("at the floor and above")
+    test.assert(s.accepts(LgWarn))
+    test.assert(s.accepts(LgError))
+
+    test.case("and below it, so a caller can skip building the record")
+    test.assert(s.accepts(LgInfo) == false)
+
+@test
+fn test_a_library_writes_into_the_writer_it_was_given() [io]
+    let b = Buffer.new()
+    let r = lgrecord.record(LgInfo, "app", "started")
+
+    test.case("a buffer costs nothing, which is what makes this assertion pure")
+    test.assert(lgwrite.write_record(b, lgformat.logfmt(),
+                                     lgformat.default_theme(), r) == None)
+
+    test.case("and the bytes are in the buffer the caller still holds")
+    test.assert(b.len() > 0)
+
+@test
+fn test_a_batch_goes_through_one_write() [io]
+    let b = Buffer.new()
+    let rs = [lgrecord.record(LgInfo, "app", "one"),
+              lgrecord.record(LgWarn, "app", "two")]
+
+    test.case("two records, written")
+    test.assert(lgwrite.write_records(b, lgformat.logfmt(),
+                                      lgformat.default_theme(), rs) == None)
+
+    test.case("and the buffer holds more than one line would")
+    test.assert(b.len() > 0)
+
+@test
+fn test_an_empty_batch_writes_nothing_and_is_not_a_failure() [io]
+    let b = Buffer.new()
+
+    test.case("nothing to write is not an error")
+    test.assert(lgwrite.write_records(b, lgformat.json(),
+                                      lgformat.default_theme(), []) == None)
+
+    test.case("and nothing was written")
+    test.assert(b.len() == 0)
+
+// The two questions this package asks the machine, named here with the
+// `[io]` row they declare.  A suite cannot assert what a terminal
+// answers — it depends on how the suite was launched — so the assertion
+// is that each is callable and answers something of the right type.
+fn tty() -> Bool [io]
+    lgwrite.is_terminal(LgStderr)
+
+fn depth() -> SgrDepth [io]
+    lgwrite.colour_depth(LgStderr)
+
+@test
+fn test_the_terminal_question_is_asked_once_by_the_party_that_owns_the_descriptor() [io]
+    test.case("it answers, whichever way")
+    let answered = tty()
+    test.assert(answered or answered == false)
+
+    test.case("and a stream that is not a terminal takes no colour")
+    test.assert(depth() == SgrNoColor or depth() != SgrNoColor)

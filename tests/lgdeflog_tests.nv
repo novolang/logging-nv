@@ -1,0 +1,138 @@
+// lgdeflog_tests.nv — a device's line, as a host record.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-nv.lgdeflog.<fn>`.
+//
+// THE TWO PROPERTIES THAT MATTER.  A device trace line must arrive as a
+// trace line — that is why `LgLevel` has six and not the standard
+// library's five, and if the mapping collapsed it the one filter a
+// person reaches for when a device is chatty would stop working.  And a
+// conversion that drops something must SAY it dropped it, because a
+// reader of a mixed log has no other way to know a 128-bit argument
+// became text.
+
+use std.test
+use std.list
+use lgdeflog
+use lgfilter
+use lgsink
+use lgrecord
+
+fn line(level: DeflogLevel, text: Str, args: [DeflogValue]) -> DeflogRecord
+    DeflogRecord { index: 7, level: Some(level), stamp: None, site: None,
+                   text: text, args: args }
+
+@test
+fn test_every_device_level_keeps_its_loudness() [io]
+    test.case("trace stays trace, which is the reason for the sixth level")
+    test.assert(lgdeflog.level_of(LogTrace) == LgTrace)
+
+    test.case("and the other four map one to one")
+    test.assert(lgdeflog.level_of(LogDebug) == LgDebug)
+    test.assert(lgdeflog.level_of(LogInfo) == LgInfo)
+    test.assert(lgdeflog.level_of(LogWarn) == LgWarn)
+    test.assert(lgdeflog.level_of(LogError) == LgError)
+
+@test
+fn test_a_device_line_becomes_a_record_a_host_filter_can_govern() [io]
+    let r = lgdeflog.record_of(line(LogWarn, "queue backed up", []))
+
+    test.case("the level is the device's")
+    test.assert(r.level == LgWarn)
+
+    test.case("the message is the decoder's rendered text")
+    test.assert(r.message == "queue backed up")
+
+    test.case("the target is never empty, because an empty one can only be governed by the root rule")
+    test.assert(r.target != "")
+
+    test.case("and it carries no timestamp, because this call was given no base")
+    test.assert(lgrecord.has_timestamp(r) == false)
+
+@test
+fn test_arguments_arrive_as_fields_a_filter_can_reach() [io]
+    let r = lgdeflog.record_of(line(LogInfo, "depth 512",
+                                    [ValUnsigned(512), ValBool(true)]))
+
+    test.case("one field per argument, named positionally because a format string has no names")
+    test.assert(list.len(r.fields) == 2)
+
+    test.case("and each keeps its type rather than becoming text")
+    match lgrecord.field_of(r, "arg0")
+        Some(v) => test.assert(lgrecord.value_kind(v) == "int")
+        None    => test.assert(false)
+
+@test
+fn test_a_value_that_does_not_fit_becomes_text_and_is_reported() [io]
+    test.case("the arms that fit go across with their types")
+    test.assert(lgrecord.value_kind(lgdeflog.value_of(ValUnsigned(512))) == "int")
+    test.assert(lgrecord.value_kind(lgdeflog.value_of(ValBool(true))) == "bool")
+    test.assert(lgrecord.value_kind(lgdeflog.value_of(ValFloat(0.5))) == "float")
+    test.assert(lgrecord.value_kind(lgdeflog.value_of(ValStr("x"))) == "str")
+
+    test.case("a 128-bit argument becomes text rather than a wrong number")
+    test.assert(lgrecord.value_kind(lgdeflog.value_of(ValWide(1, 0, false))) == "str")
+
+    test.case("and the record that carried it says so")
+    let wide = line(LogInfo, "counter", [ValWide(1, 0, false)])
+    test.assert(list.len(lgdeflog.lossy_fields(wide)) > 0)
+
+@test
+fn test_an_ordinary_device_line_loses_nothing_worth_reporting() [io]
+    let plain = line(LogInfo, "tick", [ValUnsigned(1)])
+
+    test.case("integers and strings survive, so nothing is reported")
+    test.assert(list.len(lgdeflog.lossy_fields(plain)) == 0)
+
+@test
+fn test_a_counter_needs_a_base_and_says_so_when_there_is_none() [io]
+    let none = lgdeflog.no_tick_base()
+
+    test.case("a base that knows no rate answers no timestamp rather than inventing one")
+    test.assert(lgdeflog.stamp_seconds(DeflogStamp { ticks: 1280000, text: "" }, none) == 0.0)
+
+    test.case("a base built from one observation knows the rate it was given")
+    let b = lgdeflog.tick_base(64000000.0, 1757548800.0, 1280000)
+    test.assert(b.ticks_per_second == 64000000.0)
+
+    test.case("and the counter at that observation reads back as the host second")
+    test.assert(lgdeflog.stamp_seconds(DeflogStamp { ticks: 1280000, text: "" }, b)
+                == 1757548800.0)
+
+@test
+fn test_a_batch_converts_in_order() [io]
+    let ds = [line(LogInfo, "one", []), line(LogWarn, "two", [])]
+    let rs = lgdeflog.records_of(ds, lgdeflog.no_tick_base())
+
+    test.case("one record per device line")
+    test.assert(list.len(rs) == 2)
+
+// The two calls a host tool makes once it has a base and a sink, named
+// here with the rows they declare.
+fn bring_stamped(d: DeflogRecord, b: LgTickBase) -> Float []
+    lgdeflog.record_of_at(d, b).ts_unix
+
+fn ship(ds: [DeflogRecord], b: LgTickBase) -> Result<Int, LgSinkFault> []
+    lgdeflog.bridge_into(ds, lgsink.null_sink(), lgfilter.filter(LgInfo), b)
+
+@test
+fn test_a_stamped_conversion_uses_the_base_it_was_given() [io]
+    let d = DeflogRecord { index: 7, level: Some(LogInfo),
+                           stamp: Some(DeflogStamp { ticks: 1280000, text: "" }),
+                           site: None, text: "tick", args: [] }
+    let b = lgdeflog.tick_base(64000000.0, 1757548800.0, 1280000)
+
+    test.case("the record carries the wall-clock second the base resolves to")
+    test.assert(bring_stamped(d, b) == 1757548800.0)
+
+@test
+fn test_a_bridge_into_a_pure_sink_costs_nothing() [io]
+    test.case("the row is the sink's, so a device batch into a null sink is []")
+    match ship([line(LogInfo, "one", [])], lgdeflog.no_tick_base())
+        Ok(n)  => test.assert(n == 1)
+        Err(_) => test.assert(false)
+
+@test
+fn test_a_device_line_with_no_site_still_has_a_target_a_rule_can_match() [io]
+    test.case("never the empty string, because an empty target has only the root rule")
+    test.assert(lgdeflog.target_of(line(LogInfo, "tick", [])) != "")

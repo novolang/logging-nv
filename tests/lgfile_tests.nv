@@ -1,0 +1,148 @@
+// lgfile_tests.nv — rotation, as the arithmetic it is.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-nv.lgfile.<fn>`.
+//
+// EVERY CASE HERE IS AN OFF-BY-ONE somebody has shipped.  A `keep = 3`
+// that keeps four; a size rule that rotates AT the cap rather than past
+// it, so a program with a cap of one byte writes one file per line; a
+// daily rotation that compares formatted dates and skips a day when the
+// month rolls over.  None of them needs a file to check, which is why
+// the naming and the keeping are `[]` and only the renaming is `[fs]`.
+
+use std.test
+use std.list
+use std.str
+use lgfile
+use lgformat
+
+@test
+fn test_the_conservative_policy_is_the_default() [io]
+    let p = lgfile.policy(lgformat.json())
+
+    test.case("no rotation, because something else may own it")
+    test.assert(p.rotate == LgRotateNever)
+
+    test.case("push every record, because losing an hour is worse than a system call")
+    test.assert(p.flush_every == 0)
+
+    test.case("and refuse to create a directory, because a path typo must not become a log nobody finds")
+    test.assert(p.create_dirs == false)
+
+@test
+fn test_a_size_rule_rotates_past_the_cap_and_not_at_it() [io]
+    test.case("under the cap, no")
+    test.assert(lgfile.should_rotate(LgRotateSize(1024, 3), 1023, 20342, 20342) == false)
+
+    test.case("exactly at the cap, no — the file is allowed to BE the cap")
+    test.assert(lgfile.should_rotate(LgRotateSize(1024, 3), 1024, 20342, 20342) == false)
+
+    test.case("past it, yes")
+    test.assert(lgfile.should_rotate(LgRotateSize(1024, 3), 1025, 20342, 20342))
+
+    test.case("and a never rule never rotates, whatever the size")
+    test.assert(lgfile.should_rotate(LgRotateNever, 1000000000, 20000, 20342) == false)
+
+@test
+fn test_a_daily_rule_compares_day_numbers_and_not_dates() [io]
+    test.case("the same day, no")
+    test.assert(lgfile.should_rotate(LgRotateDaily(7), 10, 20342, 20342) == false)
+
+    test.case("the next day, yes")
+    test.assert(lgfile.should_rotate(LgRotateDaily(7), 10, 20341, 20342))
+
+    test.case("and across a month boundary, which is where a date comparison goes wrong")
+    test.assert(lgfile.should_rotate(LgRotateDaily(7), 10, 20331, 20332))
+
+    test.case("size does not enter a daily rule")
+    test.assert(lgfile.should_rotate(LgRotateDaily(7), 1000000000, 20342, 20342) == false)
+
+@test
+fn test_the_combined_rule_is_either_bound() [io]
+    test.case("the size bound alone")
+    test.assert(lgfile.should_rotate(LgRotateDailyOrSize(1024, 3), 2048, 20342, 20342))
+
+    test.case("the day bound alone")
+    test.assert(lgfile.should_rotate(LgRotateDailyOrSize(1024, 3), 10, 20341, 20342))
+
+    test.case("and neither")
+    test.assert(lgfile.should_rotate(LgRotateDailyOrSize(1024, 3), 10, 20342, 20342) == false)
+
+@test
+fn test_a_rotated_name_keeps_the_extension_where_a_viewer_looks() [io]
+    test.case("the suffix goes after the whole path")
+    test.assert(lgfile.rotated_name("/var/log/app.jsonl", 1) == "/var/log/app.jsonl.1")
+
+    test.case("and counting starts at the most recent rotation")
+    test.assert(lgfile.rotated_name("/var/log/app.jsonl", 2) == "/var/log/app.jsonl.2")
+
+@test
+fn test_a_dated_name_carries_the_day_a_person_reads() [io]
+    test.case("the day number becomes a date in the name")
+    test.assert(str.contains(lgfile.dated_name("/var/log/app.jsonl", 20342), "app.jsonl."))
+
+    test.case("and two days give two names")
+    test.assert(lgfile.dated_name("/var/log/app.jsonl", 20342)
+                != lgfile.dated_name("/var/log/app.jsonl", 20341))
+
+@test
+fn test_keep_counts_what_is_kept_and_not_what_exists() [io]
+    let three = ["/var/log/app.jsonl.1", "/var/log/app.jsonl.2", "/var/log/app.jsonl.3"]
+
+    test.case("keeping one of three retires two")
+    test.assert(list.len(lgfile.retired_names(LgRotateSize(1024, 1), three)) == 2)
+
+    test.case("keeping three of three retires none")
+    test.assert(list.len(lgfile.retired_names(LgRotateSize(1024, 3), three)) == 0)
+
+    test.case("keeping none retires all three, which is a real configuration")
+    test.assert(list.len(lgfile.retired_names(LgRotateSize(1024, 0), three)) == 3)
+
+    test.case("and a never rule retires nothing, because it never made an old file")
+    test.assert(list.len(lgfile.retired_names(LgRotateNever, three)) == 0)
+
+@test
+fn test_a_day_number_comes_off_the_stamp_the_caller_already_had() [io]
+    test.case("the epoch is day zero")
+    test.assert(lgfile.day_of(0.0) == 0)
+
+    test.case("one second before the next midnight is still the same day")
+    test.assert(lgfile.day_of(86399.0) == 0)
+
+    test.case("and midnight starts the next one")
+    test.assert(lgfile.day_of(86400.0) == 1)
+
+// The three builders and the four calls that touch the filesystem, named
+// here with the rows they declare.  A test suite cannot create a log
+// directory and still be the millisecond arithmetic check this file is,
+// so these are compiled rather than run: the assertion is that each
+// signature is callable at the row it claims.
+fn build_a_policy() -> LgFilePolicy []
+    lgfile.flushing(lgfile.rotating(lgfile.policy(lgformat.json()),
+                                    LgRotateSize(10485760, 5)),
+                                    1000)
+
+fn start_a_sink() -> Result<LgFileSink, LgSinkFault> [fs]
+    lgfile.open("/var/log/app.jsonl", build_a_policy(), 20342)
+
+fn write_one(s: LgFileSink, r: LgRecord) -> Result<LgFileSink, LgSinkFault> [fs]
+    lgfile.append(s, r, 20342)
+
+fn write_many(s: LgFileSink, rs: [LgRecord]) -> Result<LgFileSink, LgSinkFault> [fs]
+    lgfile.append_all(s, rs, 20342)
+
+fn roll(s: LgFileSink) -> Result<LgFileSink, LgSinkFault> [fs]
+    lgfile.rotate_now(s, 20342)
+
+fn tidy(s: LgFileSink) -> Result<[Str], LgSinkFault> [fs]
+    lgfile.retire(s)
+
+@test
+fn test_the_builders_change_one_field_each() [io]
+    let p = build_a_policy()
+
+    test.case("the rotation rule is the one that was set")
+    test.assert(p.rotate == LgRotateSize(10485760, 5))
+
+    test.case("and the flush interval is the one that was set")
+    test.assert(p.flush_every == 1000)
