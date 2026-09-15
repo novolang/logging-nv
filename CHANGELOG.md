@@ -5,6 +5,10 @@ All notable changes to logging-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-11
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -53,3 +57,20 @@ The **interface**: every signature and every effect row, and no bodies.
   bridge; a `deflog-sink-nv` adapter is the alternative.
 - **No device claim.** `Str`, `Result` and the record's list of fields
   do not link at `@tier(embedded)`, so there is no probe.
+
+### Design notes
+
+- The `logging-core-nv` split is not the only way to let a `core`
+  package reach `LgSink[e]`.  `docs/publishing.md` § A package with a
+  core and a host half lets one package declare `layer = "core"` with
+  `host_modules = ["lgwrite", "lgfile"]`.  That would work too, and it
+  would move this package's cell on the Orbit map.  Which of the two is
+  right is a milestone-review decision.
+- `LgNullSink` carries a level floor because a struct with no fields is
+  a parse error.  The field turned out to improve the type: `accepts`
+  now has an answer a test can exercise against the skip path.
+- `LgFileSink` claims `[fs]` and not `[io, fs]`.  The standard library's
+  `File` declares `impl Write[io, fs]`, so an implementation written the
+  obvious way would inherit both.  `[fs]` is the honest claim for
+  "append to a named file" and the implementation has to make it true;
+  if it cannot, the declaration widens and the change is recorded here.

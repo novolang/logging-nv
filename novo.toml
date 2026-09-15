@@ -1,7 +1,7 @@
 [package]
 name        = "logging-nv"
 license     = "Apache-2.0"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Structured logging as a record and a sink: a level, a target, a message and typed fields, filtered by longest-prefix module rules, rendered by a human/logfmt/JSON formatter family, and delivered through `LgSink[e]` — the trait with an effect parameter that lets one generic emit cost `[io]` over a terminal, `[fs]` over a rotating file and nothing at all over a ring buffer.  The deferred-logging decoder's records enter through the same sink.  Interface only — every body is a todo()."
 
 # `license` sits immediately after the name, before any value that could

@@ -1,210 +1,332 @@
 # logging-nv
 
-Structured logging for novo-lang: a record with typed fields, a filter,
-a formatter family, and sinks behind one trait whose effect parameter
-means a log call costs exactly what its destination costs.
+**Structured logging** records an event as a value with named fields rather than
+as a sentence, so that a program reading the log can find a field by name. The
+convention was made ordinary by Rust's [`log`](https://docs.rs/log) facade and
+[`tracing-subscriber`](https://docs.rs/tracing-subscriber), and by Python's
+[`logging`](https://docs.python.org/3/library/logging.html). This package brings
+it to novo-lang, with the destinations that write: a standard stream, a rotating
+file, a ring buffer in memory, and a bridge that turns a microcontroller's
+deferred log into the same records.
+[logging-core-nv](https://novo-lang.org/packages/logging-core-nv) publishes the
+part that performs no input or output, for a library that must declare an empty
+effect list.
 
-**Status: NOT IMPLEMENTED — interface only.**  Every `pub fn` body is a
-`todo()`, so the signatures, the effect rows and the tests are published
-and nothing is implemented.  The first implementation is the `0.1.0`
-published over this.
+**Status: NOT IMPLEMENTED — interface only.** Every function is declared with
+its full signature, but every body is a `todo()` that panics when called. The
+package is published so its design can be reviewed and depended on before it is
+implemented. Version 0.1.0 will be the first working release.
 
-## What this is
+## What it is
 
-A port of Rust's `log` facade and Python's `logging`, cut to the layer
-design: a level, a target, a message and typed fields go in; a filter
-decides; a formatter renders; a sink writes.
+A **record** is one thing that happened. It carries a level, a target, a
+message, a time, a list of fields and an optional source location.
 
-| module | holds | rows |
-| --- | --- | --- |
-| `lgrecord` | the level, the typed field value, the record | `[]` |
-| `lgfilter` | the per-target rules and the specification grammar | `[]` |
-| `lgformat` | human with colour, logfmt, JSON lines | `[]` |
-| `lgsink` | **`LgSink[e]`**, the fault type, the null sink, the generic emits | `[e]` |
-| `lgwrite` | the writer form, the stderr/stdout sink, the terminal question | `[e]`, `[io]` |
-| `lgfile` | the file sink, and rotation as arithmetic | `[]`, `[fs]` |
-| `lgring` | the last N records, as a value and as a sink | `[]`, `[mutate]`, `[e]` |
-| `lgdeflog` | a device's decoded frames as records | `[]`, `[e]` |
-| `lglog` | the logger facade, and the seam with `std.log` | `[]`, `[e]`, `[io]`, `[time]` |
+A **level** says how loud a record is. There are six, from `LgTrace` to
+`LgError`, with `LgOff` above them as a threshold that silences everything.
 
-## The load-bearing interface
+A **target** is the dotted name of the subsystem that emitted the record, such
+as `http.server`. The caller chooses it, and a filter matches on it.
 
-```novo norun:pseudo
-pub trait LgSink[e]
-    fn emit(self, r: LgRecord) -> Result<Unit, LgSinkFault> [e]
-    fn flush(self) -> Result<Unit, LgSinkFault> [e]
-    fn accepts(self, l: LgLevel) -> Bool [e]
+A **field** is one key and one value. A field value keeps its type: text, whole
+number, real number, true or false, or present-and-empty. A consumer that reads
+`status` gets a number on every line.
+
+A **filter** decides whether a record is worth writing, before it is rendered.
+It holds a default level and a list of rules, each a target prefix and the level
+that prefix governs.
+
+A **format** decides how a record is written. The human format is for a person
+reading a terminal. The logfmt format writes `key=value` pairs on one line. The
+JSON lines format writes one JSON object per line, for a collector.
+
+A **sink** is where a record goes. `LgSink[e]` is a trait with one effect
+parameter. Each implementation supplies the effects its own writing costs, so a
+function that emits through a sink is charged exactly that and no more. Writing
+to a terminal costs `[io]`. Writing to a file costs `[fs]`. Pushing into a ring
+buffer costs `[mutate]`. The sink that keeps nothing costs nothing.
+
+A **logger** binds a target, a filter, a format, a theme and a list of sticky
+fields that go on every line it builds. It resolves the filter's answer for its
+target once, so the per-line check compares two numbers.
+
+**Rotation** is starting a new file so that a program logging for a year does
+not fill a disk. A policy says when: never, past a size, at a day boundary, or
+both.
+
+A **deferred log** is the shape a microcontroller uses. The device sends an
+interned format-string index and raw argument bytes, and a host decodes them.
+This package converts one of those decoded records into an `LgRecord`, so a
+firmware's log and its host tool's log go through one filter and one file.
+
+## Install
+
+```
+novo pkg add logging-nv
 ```
 
-**`LgSink[e]` is the package.**  The effect parameter is what lets one
-generic emit be written once and charged what the caller's own sink
-costs — `[io]` over a terminal, `[fs]` over a rotating file, `[mutate]`
-over a ring buffer, and **nothing at all** over the null sink or a
-buffer a test drains.
-
-The standard library's `Logger` shows what the alternative costs.  Its
-`LogSink` is an enum, so — as [its own page](../../docs/stdlib/log.md)
-says — `Logger.info` is charged the union over the variants, `[io]`,
-"even when the installed sink is `SinkNull`".  A program that logs into
-a buffer and asserts on the bytes is charged for a console it never
-touches, and a caller with no `[io]` to give cannot log at all.
-
-**The sink takes the record, not the line.**  The obvious surface —
-`emit(self, line: Str)` — is wrong twice.  A ring buffer on a device
-would have to format on the target, which is the entire cost the
-deferred-logging story exists to avoid.  And a program writing to a
-terminal and a collector would have to render the same record twice, in
-two formats, in a caller that has no reason to know there are two.  So a
-sink holds its own `LgFormat` and renders when and if it writes.
-
-## The one example that will work
+## Example
 
 ```novo
 use lgfilter
 use lgformat
 use lglog
 use lgrecord
-use lgsink
 use lgwrite
 
 fn main() [io]
-    let sink = lgwrite.stderr_sink(lgformat.human())
+    // A sink over stderr, rendering each record in the human format.
+    let console = lgwrite.stderr_sink(lgformat.human())
+
+    // A logger for one subsystem, under a filter that raises http to debug.
     let lg = lglog.filtered(lglog.logger("http.server"),
                             lgfilter.rule(lgfilter.filter(LgInfo), "http", LgDebug))
 
-    match lglog.emit(lg, sink, LgInfo, "request served",
+    // Write one record through the sink. The call costs what the sink costs,
+    // and the sink renders the record through the format it holds.
+    match lglog.emit(lg, console, LgInfo, "request served",
                      [lgrecord.field_int("status", 200),
                       lgrecord.field_float("seconds", 0.012)])
         Ok(written) => println("${written}")
         Err(e)      => println(e.message())
 ```
 
-## Adding it, and checking it
+Build and test with `novo pkg build` and `novo test`. Today `novo test` fails on
+purpose: every test reaches a `not implemented` panic.
 
-```console
-$ novo pkg add logging-nv
-$ novo pkg build
-$ novo test tests/lgsink_tests.nv
+## What the package contains
+
+| Module | Contents |
+| --- | --- |
+| `lgrecord` | The record and its parts: the six levels, the typed field value, the field, the record, and the check for reserved and duplicate keys. |
+| `lgfilter` | The filter: a default level, prefix rules, the longest-prefix lookup, the one-line specification grammar, and the report of unreachable rules. |
+| `lgformat` | The three renderings: human with colour, logfmt, and JSON lines. Each writes into a string or into a buffer the caller owns. |
+| `lgsink` | The `LgSink[e]` trait, the fault type, the sink that keeps nothing, and the generic emits that cost whatever the caller's sink costs. |
+| `lgwrite` | The sinks over stderr and stdout, the writer form that takes any `Write`, and the two questions this package asks the machine. |
+| `lgfile` | The rotating file sink, and the naming and keeping decisions as plain arithmetic over a size and a day number. |
+| `lgring` | The last N records, as a value the caller threads and as a sink behind a slot the caller owns. |
+| `lgdeflog` | A decoded device record as an `LgRecord`: the level mapping, the tick-to-second conversion, and what the conversion drops. |
+| `lglog` | The logger: its target, filter, format and sticky fields, the emit calls, the clock reading, and the bridge to `std.log`. |
+
+## How to choose an entry point
+
+**A program uses `lglog`.** Build a logger once at startup, then call
+`lglog.emit` with the sink the program owns. `lglog.build` answers the record a
+logger would emit without writing anything, which is how a test checks a
+logger's own behaviour.
+
+**A library takes the sink as a bound type parameter and calls
+`lgsink.emit_if`.** The function then costs whatever the caller's sink costs.
+
+```novo ignore
+fn served<S: lgsink.LgSink[e]>(to: S, f: LgFilter, status: Int) -> Result<Bool, LgSinkFault> [e]
+    lgsink.emit_if(to, f, lgrecord.record(LgInfo, "http.server", "request served"))
 ```
 
-The suites are **red on purpose**: every body is a `todo()`, so every
-assertion reaches `not implemented: logging-nv.<module>.<fn>`.  That is
-what an interface release looks like from the outside, and it is how the
-first implementation will know it is finished.
+**A library that writes to a destination the caller supplies calls
+`lgwrite.write_record`.** It is generic over the standard library's `Write`, so
+an in-memory buffer costs nothing and a file costs the file's effects. A test of
+a library's log output is then an ordinary assertion on bytes.
 
-`novo pkg add` says `NOT IMPLEMENTED — interface only` on the way in,
-because an interface resolves, downloads and builds exactly like an
-implemented package and the difference only shows the first time
-something calls it.
+**A program chooses a sink by where the output goes.** `lgwrite.stderr_sink` for
+a terminal. `lgwrite.stdout_sink` only when the program's standard output *is*
+the log. `lgfile.open` for a file that rotates. `lgring.ring_sink` for the last
+N records held in memory. `lgsink.null_sink` for a test.
 
-## The layer, and why
+**A host tool for a device calls `lgdeflog.bridge_into`.** It takes a batch of
+decoded device records and puts them into any sink, through the same filter as
+everything else.
 
-`host`, and the rows are not all the same — which is the disclosure
-worth having.  Six of the nine modules declare **nothing**: the record,
-the filter, the formatter family, the ring's arithmetic, the device
-conversion and the logger's record builder are all `[]`.  What performs
-is `lgwrite` (`[io]`), `lgfile` (`[fs]`), `lgring`'s sink impl
-(`[mutate]`), `lglog.now` (`[time]`), and everything generic over
-`LgSink[e]`, which costs what the caller's sink costs.
+## The rules a user needs
 
-### The missing row
+1. **A higher level number is louder.** `LgTrace` is 0 and `LgOff` is 5. A
+   threshold admits what is at least as loud as itself. Call
+   `lgrecord.level_at_least` rather than writing the comparison.
+2. **There are six levels, where `std.log` has five.** `LgTrace` is the extra
+   one. A device trace line therefore arrives as a trace line, and a filter set
+   to debug-but-not-trace can be expressed.
+3. **`LgOff` is a threshold and never a record's level.** A record built at
+   `LgOff` is filtered out by every filter.
+4. **A filter's longest matching prefix wins, and prefixes match whole
+   segments.** `"ml"` governs `ml` and `ml.core`. It does not govern `mlx`.
+   Rule order in a specification is therefore not a hidden meaning.
+5. **The specification grammar is `env_logger`'s.** A bare level sets the
+   default. Comma-separated `target=level` clauses add rules. See the `RUST_LOG`
+   section of [`env_logger`](https://docs.rs/env_logger)'s documentation.
+6. **A sink fault is not a program error.** `emit` answers a `Result` so that a
+   caller can look at it. Propagating it with `!` would make a failed log line
+   abort the request it was describing.
+7. **A sink renders the record itself, through the format it holds.** Nothing
+   hands a sink a finished line. One record can therefore reach a terminal in
+   colour and a collector as JSON.
+8. **`level`, `logger`, `msg` and `ts` are reserved in the JSON format.** A
+   caller's field with one of those keys appears twice in the object, and this
+   package does not rename it. `lgrecord.reserved_or_duplicate_keys` reports it.
+9. **The JSON line's key set is fixed. Its key order is not.** A JSON object is
+   unordered, so a consumer must read by name. See
+   [JSON Lines](https://jsonlines.org/).
+10. **logfmt quotes a value containing a space, an `=`, a quote or a control
+    byte, and leaves every other value bare.**
+    `lgformat.logfmt_needs_quoting` is the rule a consumer's parser has to agree
+    with. See the [logfmt convention](https://brandur.org/logfmt).
+11. **The default stream is stderr.** A log line on standard output corrupts the
+    output of any program whose standard output is data. Use
+    `lgwrite.stdout_sink` only for a program whose output is the log itself.
+12. **The clock is read in one place.** `lglog.now` is the only call here that
+    reads it. `lglog.emit` takes no time. `lglog.emit_at` takes the value, so
+    the clock's effect appears at the call site that read it.
+13. **`lgfile.append` takes the day the caller is in.** Rotation reads no clock,
+    which is what makes a month boundary testable. `lgfile.day_of` turns a Unix
+    second into that day number.
+14. **Rotation names and keeps by arithmetic that performs nothing.**
+    `lgfile.should_rotate`, `.rotated_name`, `.dated_name` and `.retired_names`
+    take numbers and answer with names. Only `open`, `append`, `rotate_now` and
+    `retire` touch the filesystem.
+15. **A file sink reports a failed write.** It does not swallow one, so a disk
+    that filled at 03:00 does not look like a quiet night.
+16. **Colour is asked once, by the party that owns the descriptor.**
+    `lgwrite.is_terminal` and `lgwrite.colour_depth` are the two questions. The
+    answers go into `LgHumanStyle`, and every render stays free of effects.
+    `colour_depth` also honours `NO_COLOR` and a `TERM` of `dumb`.
+17. **A full ring drops the oldest record and counts it.** The ring sink answers
+    `Ok` even when it dropped one, because a ring that failed on a full buffer
+    would be a queue. The count comes back on the ring's own `dropped` field.
+18. **A device record does not convert without loss, and the loss is
+    reported.** A 128-bit argument, a byte string, a list and a nested type
+    arrive as text. The interned index and the raw tick count do not arrive.
+    `lgdeflog.lossy_fields` names what was dropped, per record.
+19. **A device stamp needs a tick rate and an origin.** A device counter's unit
+    is the firmware's business. `lgdeflog.tick_base` takes the ticks per second,
+    a host time and the device counter read at that moment.
+    `lgdeflog.no_tick_base` leaves records unstamped rather than dating them to
+    1970.
+20. **The human format pads the level tag to column nine**, which is the column
+    `std.log`'s own text format uses. Output from both surfaces lines up during
+    a migration.
 
-**A `core` package cannot reach `LgSink[e]`.**  A `core` package may
-depend only on `core` packages, so the trait that was designed to let a
-core library log at `[]` is, at this layer, out of its reach — the one
-thing in this design that does not fit its box.
+## What is not included
 
-What would close it is a second row, `logging-core-nv` at `core`,
-holding `lgrecord`, `lgfilter`, `lgformat`, the `LgSink[e]` declaration
-and `lgring`'s value half — every one of which is already `[]` — with
-this package keeping `lgwrite`, `lgfile`, `lgring`'s sink, `lgdeflog`
-and `lglog`.  Nothing would have to be redesigned to make the split; the
-line is already drawn in the table above.
+- **A replacement for `std.log`.** The standard library's global functions reach
+  a working stderr with nothing threaded anywhere, and its `Logger` already has
+  per-module levels, text and JSON output and five sinks. A program those serve
+  should not take this dependency. `lglog.to_std_log` is the seam for one that
+  is migrating a subsystem at a time.
+- **A clock inside the emit path.** Reading the time is an effect, and an emit
+  that read it would charge every caller. `lglog.emit_at` takes the value.
+- **A global logger.** A filter and a logger are values the caller threads. One
+  process-wide threshold cannot say "debug from the scheduler, error from the
+  HTTP client".
+- **A generic fan-out over two arbitrary sinks.** A function may bind exactly
+  one effect parameter, so a signature over two sink types with two different
+  effect sets cannot be written. `lglog.emit_to_console_and_file` is the
+  concrete pair, at `[io, fs]`. Any other pair calls `emit_all` twice and keeps
+  its own counts.
+- **A message-text filter.** `env_logger` can match on the rendered message.
+  Matching on text would make the gate depend on the rendering, which this
+  package defers until after the gate.
+- **Local time.** The RFC 3339 stamp is UTC. A local rendering needs a timezone
+  database and a clock, and the formatter has neither.
+- **A transport for a device.** Nothing here reads a serial port or an ELF file.
+  [deflog-decoder](https://novo-lang.org/packages/deflog-decoder) does that, and
+  this package converts what it produces.
+- **Running on a microcontroller.** A record holds a message, a target and a
+  list of fields, all of which allocate, and none of them link on a device.
+- **Use beside logging-core-nv.** See "Related packages".
 
-The alternative, and the reason it was not taken here: `docs/publishing.md`
-§ A package with a core and a host half lets one package declare
-`layer = "core"` with `host_modules = ["lgwrite", "lgfile"]`.  That
-would work, and it would move this package's cell on the Orbit map away
-from where the must-have plan put it.  Which of the two is right is a
-decision for the milestone review rather than for this lane.
+## Related packages
 
-## What `std.log` keeps
+- [logging-core-nv](https://novo-lang.org/packages/logging-core-nv) publishes
+  the record, the filter, the formats, the `LgSink[e]` declaration and the
+  ring's value half at a layer a library with no effects can depend on. **A
+  program takes one of the two packages, not both.** Both declare `LgRecord`,
+  `LgSink` and the rest under the same names, and an assembly holding both is
+  refused with `E2005`. Take logging-core-nv when your library must not perform
+  anything. Take this package when your program owns the destination.
+- [ansi-nv](https://novo-lang.org/packages/ansi-nv) supplies the colour
+  attributes the human format uses, and the arithmetic that narrows a
+  twenty-four-bit colour to the sixteen a real terminal has.
+- [deflog-decoder](https://novo-lang.org/packages/deflog-decoder) and
+  [deflog-parser](https://novo-lang.org/packages/deflog-parser) decode a
+  device's deferred log. They bring `elf-nv`, `leb128-nv`, `zigzag-nv` and
+  `rzcobs-nv` with them, so this package's closure is seven packages.
+- [tracing-nv](https://novo-lang.org/packages/tracing-nv) records spans, which
+  are events with a duration and a parent. A log line says what happened. A span
+  says how long it took and what it was part of.
+- `std.log` in the standard library is the no-dependency case. Its sink is an
+  enum, so every logging call is charged the union over the variants, `[io]`,
+  even when the installed sink discards. Its field values are text.
 
-This package does not replace the standard library's logging and should
-not be taken by a program the standard library already serves.
+## Tests
 
-- **The global functions stay.**  `log.info("…")` reaches a working
-  stderr with no value threaded anywhere.  A script, a tutorial example
-  and a forty-line `main` all want that, and this package does not wrap
-  them.
-- **`std.log`'s `Logger` keeps the whole no-dependency case.**  It costs
-  nothing to resolve, and it already has per-module levels with
-  longest-prefix matching, text and JSON, five sinks and a pure
-  `render_at`.
-- **`render_at` keeps being the reference for the text format.**  The
-  human format here pads the level tag to the same column nine, so a
-  program migrating one subsystem at a time produces output that still
-  lines up.
-- **`lglog.to_std_log` is the seam**, so a program can start building
-  records and filtering them properly while its output still goes
-  through the standard library's own logger.
+```bash
+novo test tests                            # every suite
+novo test tests/lgrecord_tests.nv          # the level order and the typed field
+novo test tests/lgfilter_tests.nv          # longest prefix, and the segment rule
+novo test tests/lgformat_tests.nv          # the three renderings and their escaping
+novo test tests/lgsink_tests.nv            # the trait, and what its parameter costs
+novo test tests/lgwrite_tests.nv           # the stream sinks, and the stderr default
+novo test tests/lgfile_tests.nv            # rotation, as arithmetic
+novo test tests/lgring_tests.nv            # the last N records, and the drop count
+novo test tests/lgdeflog_tests.nv          # a device's line as a host record
+novo test tests/lglog_tests.nv             # the logger, and the std.log seam
+```
 
-What this package adds, and why none of the four belongs in a standard
-library every program links: the effect parameter on the sink; typed
-field values, so the renderer rather than the call site decides how a
-number is spelled; a rotation policy; and a bridge to a device decoder
-the standard library has no reason to know about.
+`novo test` fails on purpose today. Every assertion reaches a `not implemented:
+logging-nv.<module>.<fn>` panic, because every body is a `todo()`. The tests are
+the specification the implementation will have to satisfy.
 
-## The deferred-logging bridge
+The expected text comes from the conventions the formats are named after: the
+logfmt convention for the `key=value` line, JSON Lines for the
+one-object-per-line form, RFC 3339 for the timestamp spelling, and
+`env_logger`'s `RUST_LOG` grammar for the filter specification. The level names
+and the nine-column tag are `std.log`'s.
 
-`lgdeflog` converts a `DeflogRecord` — one line a device sent as an
-interned index and raw bytes, decoded on the host by `deflog-decoder` —
-into an `LgRecord`, and `bridge_into` puts a batch of them into any
-`LgSink[e]`.  A firmware's log and its host tool's log then go through
-one filter, one format and one file.
+The suite asserts that `"ml"` governs `ml.core` and does not govern `mlx`, that
+the level comparison admits what is at least as loud as the threshold, that a
+caller's `msg` field is reported as a reserved key rather than renamed, that
+logfmt quotes exactly the values a consumer's parser expects, and that a full
+ring counts what it discarded. `tests/lgfile_tests.nv` covers the three
+off-by-one faults a rotation ships with: a `keep = 3` that keeps four, a size
+rule that rotates at the cap rather than past it, and a daily rotation that
+skips a day at a month boundary. `tests/lgdeflog_tests.nv` asserts that a device
+trace line arrives as a trace line and that a dropped value is reported.
+`tests/lgsink_tests.nv` also carries an assertion the compiler makes rather than
+`test.assert`: a function declared with an empty effect list emits through the
+null sink, and it would not compile if the effect parameter did not do what this
+package claims.
 
-Two honest costs, named here rather than discovered:
+## Implementation status
 
-- **The closure.**  Depending on `deflog-decoder` and `deflog-parser`
-  brings `elf-nv`, `leb128-nv`, `zigzag-nv` and `rzcobs-nv` with them,
-  so a program that only wants a log line on stderr assembles seven
-  packages.  A `deflog-sink-nv` adapter — depending on both and depended
-  on by neither — is the alternative, and it is the milestone review's
-  to weigh.
-- **The conversion is lossy**, and `lossy_fields` says so per record: a
-  128-bit argument, a byte string, a list and a nested user type arrive
-  as text, and the interned index and the raw tick count do not arrive
-  at all.
-
-## What widened, and what did not
-
-- **A fan-out over two arbitrary sinks cannot be written.**  A function
-  binds exactly one effect parameter (`E3005`), so
-  `fan_out<A: LgSink[e], B: LgSink[f]>` is refused with a diagnostic
-  that says as much.  What is published instead is
-  `lglog.emit_to_console_and_file`, where both sink types are named and
-  the row is the concrete `[io, fs]` that pair costs.  Any other pair
-  calls `emit_all` twice.
-- **`LgFileSink` claims `[fs]` and not `[io, fs]`.**  The standard
-  library's own `File` declares `impl Write[io, fs]`, so an
-  implementation written the obvious way would inherit both.  `[fs]` is
-  the honest claim for "append to a named file" and the implementation
-  lane's job is to make it true; if it cannot, the row widens and this
-  section says so rather than the claim quietly growing.
-- **A struct with no fields is a parse error.**  `LgNullSink` carries a
-  level floor because it had to carry something.  That turned out to
-  improve it — `accepts` now has an answer a test can exercise — but the
-  field was not the design's idea.
-
-## Reference
-
-The reference implementations are Rust's [`log`](https://docs.rs/log)
-facade, [`tracing-subscriber`](https://docs.rs/tracing-subscriber)'s
-filter grammar, and Python's
-[`logging`](https://docs.python.org/3/library/logging.html).  The
-specification-shaped pieces are their own: the logfmt convention, and
-one JSON object per line.
+| Item | Implemented |
+| --- | --- |
+| `lgrecord.LgLevel`, `.LgValue`, `.LgField`, `.LgRecord` | declared |
+| `lgrecord`'s eighteen functions, from `level_num` to `reserved_keys` | no |
+| `lgfilter.LgRule`, `.LgFilter`, `.LgFilterFault` and `impl Error` | declared |
+| `lgfilter`'s ten functions, from `filter` to `redundant_rules` | no |
+| `lgformat.LgHumanStyle`, `.LgStamp`, `.LgFormat`, `.LgTheme` | declared |
+| `lgformat`'s seventeen functions, from `human` to `tag_column` | no |
+| `lgsink.LgSink[e]`, `.LgSinkFault` and `impl Error`, `.LgNullSink`, `.LgFanout` | declared |
+| `impl LgSink[] for LgNullSink`: `emit`, `flush`, `accepts` | no |
+| `lgsink.null_sink`, `.null_sink_at`, `.emit_if`, `.emit_all`, `.emit_and_flush` | no |
+| `lgwrite.LgStream`, `.LgStdSink` | declared |
+| `impl LgSink[io] for LgStdSink`: `emit`, `flush`, `accepts` | no |
+| `lgwrite.stderr_sink`, `.stdout_sink`, `.with_min`, `.with_theme`, `.with_format` | no |
+| `lgwrite.is_terminal`, `.colour_depth`, `.write_record`, `.write_records` | no |
+| `lgfile.LgRotate`, `.LgFilePolicy`, `.LgFileSink` | declared |
+| `impl LgSink[fs] for LgFileSink`: `emit`, `flush`, `accepts` | no |
+| `lgfile.policy`, `.rotating`, `.flushing` | no |
+| `lgfile.open`, `.append`, `.append_all`, `.rotate_now`, `.retire` | no |
+| `lgfile.should_rotate`, `.rotated_name`, `.dated_name`, `.retired_names`, `.day_of` | no |
+| `lgring.LgRing`, `.LgRingSink` | declared |
+| `impl LgSink[mutate] for LgRingSink`: `emit`, `flush`, `accepts` | no |
+| `lgring`'s eleven functions, from `ring` to `dump_into` | no |
+| `lgdeflog.LgTickBase` | declared |
+| `lgdeflog`'s eleven functions, from `level_of` to `bridge_into` | no |
+| `lglog.LgLogger` | declared |
+| `lglog`'s fourteen functions, from `logger` to `to_std_log` | no |
 
 ## Licence
 
-Apache-2.0.
+Apache-2.0. See `LICENSE`.
+
+<!-- docs/writing-a-readme.md is the style guide for this page. -->
